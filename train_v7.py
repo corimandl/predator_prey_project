@@ -336,8 +336,7 @@ class Forager(Agent):
         y_max_arena = step_params.content["y_max_arena"]
         edge_penalty = step_params.content["edge_penalty"]
 
-        
-        
+
         fitness = agent.state.content["fitness"]
 
         action = new_policy.state.content['action']

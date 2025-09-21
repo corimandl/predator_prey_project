@@ -290,8 +290,7 @@ class Sheep(Agent):
                 lambda _: 1,
                 lambda _: 0, None
             )
-            # reset timer if reproduction occurred
-            final_timer = jax.lax.cond(reproduce == 1, lambda _: 0.0, lambda _: new_timer, None)
+            final_timer = jax.lax.cond(reproduce == 1, lambda _: 0.0, lambda _: new_timer, None) # reset timer if reproduction occurred
 
             # death: energy needs to be low enough (<=threshold) for a certain amount of time (min_death_time)
             death_threshold = step_params.content["death_threshold"]
@@ -305,8 +304,7 @@ class Sheep(Agent):
                 lambda _: 0.0,
                 None
             )
-            agent_is_dead = new_death_timer >= min_death_time # !!
-
+            agent_is_dead = new_death_timer >= min_death_time
 
             new_state_content = {"x": x_new, "y": y_new, "x_dot": x_dot_new, "y_dot": y_dot_new, "ang": ang_new, "ang_dot": ang_dot_new,
                                  "energy": energy_new, "reproduce": reproduce, "reproduction_timer": final_timer,
@@ -331,10 +329,50 @@ class Sheep(Agent):
     # handled in step_agent fucntion
 
     def add_agent(agent, add_params): # reproduction; birth of a new agent
-        pass
-        # agent_to_copy = add_params.content['agent_to_copy']
-        # initialize baby agent position at parent position
-        # initialize baby agent energy as half of parent energy
+        parent_agent = add_params.content['agent_to_copy'] # from add_animals in ecosystem
+
+        x = parent_agent.state.content["x"]
+        y = parent_agent.state.content["y"]
+        ang = parent_agent.state.content["ang"]
+        energy = parent_agent.state.content["energy"]/2 # baby receives half the energy of parent
+
+        x_dot = jnp.zeros((1,), dtype=jnp.float32)
+        y_dot = jnp.zeros((1,), dtype=jnp.float32)
+        ang_dot = jnp.zeros((1,), dtype=jnp.float32)
+
+        state_content = {"x": x, "y": y, "ang": ang, "x_dot": x_dot, "y_dot": y_dot, "ang_dot": ang_dot, "energy": energy, "reproduce": 0, "reproduction_timer": 0, "death_timer": 0}
+        state = State(content=state_content)
+
+        params_content = {"radius": parent_agent.params.content["radius"],
+                          "x_max": parent_agent.params.content["x_max"],
+                          "y_max": parent_agent.params.content["y_max"],
+                          "energy_begin_max": parent_agent.params.content["energy_begin_max"],
+                          "mass": parent_agent.params.content["mass"],
+                          "reproduction_prob": parent_agent.params.content["reproduction_prob"]
+        }
+        params = Params(content=params_content)
+        return agent.replace(state=state, params=params, active_state=1, age=0.0)
+
+    def half_energy(agent, set_params):
+        state_content = {
+            "x": agent.state.content["x"],
+            "y": agent.state.content["y"],
+            "ang": agent.state.content["ang"],
+            "x_dot": agent.state.content["x_dot"],
+            "y_dot": agent.state.content["y_dot"],
+            "ang_dot": agent.state.content["ang_dot"],
+            "energy": agent.state.content["energy"] / 2,  # parent loses half energy
+            "reproduce": 0,  # reset reproduce flag after reproduction
+            "reproduction_timer": 0.0,  # reset reproduction timer
+            "death_timer": agent.state.content["death_timer"]
+        }
+        state = State(content=state_content)
+        return agent.replace(state=state)
+
+
+
+
+
 
 
 

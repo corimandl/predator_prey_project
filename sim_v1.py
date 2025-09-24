@@ -196,20 +196,19 @@ class Sheep(Agent):
             ang_dot = jnp.zeros((1,), dtype=jnp.float32)  # initialize angular velocity as 0
 
             energy = random.uniform(subkeys[3], shape=(1,), minval=0.5 * energy_begin_max, maxval=energy_begin_max)
+            fitness = jnp.array([0.0])
 
-            state_content = {"x": x, "y": y, "ang": ang, "x_dot": x_dot, "y_dot": y_dot, "ang_dot": ang_dot, "energy": energy, "reproduce": 0, "reproduction_timer": 0.0, "death_timer": 0.0}
+            state_content = {"x": x, "y": y, "ang": ang, "x_dot": x_dot, "y_dot": y_dot, "ang_dot": ang_dot, "energy": energy, "fitness": fitness, "reproduce": 0, "reproduction_timer": 0.0, "death_timer": 0.0}
             state = State(content=state_content)
-
             return state
 
         def create_inactive_agent():
             state_content = {"x": jnp.array([-1.0]), "y": jnp.array([-1.0]), "ang": jnp.array([0.0]),
                              "x_dot": jnp.zeros((1,)), "y_dot": jnp.zeros((1,)), "ang_dot": jnp.zeros((1,)),
-                             "energy": jnp.array([-1.0]), "reproduce": 0, "reproduction_timer": 0.0, "death_timer": 0.0} # placeholder values
+                             "energy": jnp.array([-1.0]), "fitness": jnp.array([-1.0]), "reproduce": 0, "reproduction_timer": 0.0, "death_timer": 0.0} # placeholder values
             state = State(content=state_content)
 
             return state
-
 
         agent_state = jax.lax.cond(active_state, lambda _: create_active_agent(),
                                    lambda _: create_inactive_agent(), None)
@@ -228,6 +227,7 @@ class Sheep(Agent):
 
             # current agent state
             energy = agent.state.content["energy"]
+            fitness = agent.state.content["fitness"]
             x = agent.state.content["x"]
             y = agent.state.content["y"]
             ang = agent.state.content["ang"]
@@ -267,6 +267,7 @@ class Sheep(Agent):
             # slow movement: energy efficient -> possible for longer periods of time
             # fast movement: uses more energy -> possible only for short periods of time
             energy_new = energy + energy_intake - metabolic_cost
+            fitness_new = energy_new # for now: fitness is energy
 
             # reproduction: energy needs to be high enough (>threshold) for a certain amount of time + specific probability
             reproduction_prob = step_params.content["reproduction_prob"]
@@ -307,7 +308,7 @@ class Sheep(Agent):
             agent_is_dead = new_death_timer >= min_death_time
 
             new_state_content = {"x": x_new, "y": y_new, "x_dot": x_dot_new, "y_dot": y_dot_new, "ang": ang_new, "ang_dot": ang_dot_new,
-                                 "energy": energy_new, "reproduce": reproduce, "reproduction_timer": final_timer,
+                                 "energy": energy_new, "fitness": fitness_new, "reproduce": reproduce, "reproduction_timer": final_timer,
                                  "death_timer": new_death_timer}
             new_state = State(content=new_state_content)
 
@@ -325,8 +326,7 @@ class Sheep(Agent):
 
     # def reset_agent(agent, remove_params): # death of agent
     #     pass
-    #     # set active_state to inactive if agent dies
-    # handled in step_agent fucntion
+    # handled in step_agent function
 
     def add_agent(agent, add_params): # reproduction; birth of a new agent
         parent_agent = add_params.content['agent_to_copy'] # from add_animals in ecosystem
@@ -335,12 +335,13 @@ class Sheep(Agent):
         y = parent_agent.state.content["y"]
         ang = parent_agent.state.content["ang"]
         energy = parent_agent.state.content["energy"]/2 # baby receives half the energy of parent
+        fitness = parent_agent.state.content["fitness"]/2 # since fitness is the energy it also has to be halved
 
         x_dot = jnp.zeros((1,), dtype=jnp.float32)
         y_dot = jnp.zeros((1,), dtype=jnp.float32)
         ang_dot = jnp.zeros((1,), dtype=jnp.float32)
 
-        state_content = {"x": x, "y": y, "ang": ang, "x_dot": x_dot, "y_dot": y_dot, "ang_dot": ang_dot, "energy": energy, "reproduce": 0, "reproduction_timer": 0, "death_timer": 0}
+        state_content = {"x": x, "y": y, "ang": ang, "x_dot": x_dot, "y_dot": y_dot, "ang_dot": ang_dot, "energy": energy, "fitness": fitness, "reproduce": 0, "reproduction_timer": 0, "death_timer": 0}
         state = State(content=state_content)
 
         params_content = {"radius": parent_agent.params.content["radius"],
@@ -362,12 +363,45 @@ class Sheep(Agent):
             "y_dot": agent.state.content["y_dot"],
             "ang_dot": agent.state.content["ang_dot"],
             "energy": agent.state.content["energy"] / 2,  # parent loses half energy
+            "fitness": agent.state.content["fitness"] / 2, # parent loses half fitness - q: reproduction limits agents survival for later episodes?
             "reproduce": 0,  # reset reproduce flag after reproduction
             "reproduction_timer": 0.0,  # reset reproduction timer
             "death_timer": agent.state.content["death_timer"]
         }
         state = State(content=state_content)
         return agent.replace(state=state)
+
+
+def agent_interactions(sheep: Sheep, patches: Grass):
+
+    def sheep_grass_interaction(one_sheep, patches):
+        xs_patches = patches.state.content["x"] # shape (num_patches,)
+        ys_patches = patches.state.content["y"]
+        x_sheep = one_sheep.state.content["x"]
+        y_sheep = one_sheep.state.content["y"]
+        patches_radius = patches.params.content["radius"]
+
+        distances = jnp.linalg.norm(jnp.stack((xs_patches - x_sheep, ys_patches - y_sheep), axis=1), axis=1).reshape(-1) # euclidean distances
+        is_near_patch = jnp.where(distances < patches_radius, 1.0, 0.0)
+        in_patches_num = jnp.sum(is_near_patch) # number of patches the sheep is in
+
+        return in_patches_num, is_near_patch
+
+    in_patches_nums, is_near_patch_matrix = jax.vmap(sheep_grass_interaction, in_axes=(0, None))(sheep, patches)
+    is_energy_out_patches = jnp.any(is_near_patch_matrix, axis=1) # t/f if grass patch is being eaten by any sheep
+
+    num_sheep_at_patch = jnp.maximum(jnp.sum(is_near_patch_matrix, axis=0), 1.0) # number of sheep present per grass patch (maximum; avoid dividing by 0)
+    energy_sharing_matrix = jnp.divide(is_near_patch_matrix, num_sheep_at_patch)
+
+    energy_intake_sheep = jnp.multiply(energy_sharing_matrix, patches.state.content["energy_offer"].reshape(-1))
+    energy_intake_sheep = jnp.sum(energy_intake_sheep, axis=1).reshape(-1)
+
+    #energy_lost_per_patch = jnp.multiply(is_energy_out_patches, patches.state.content["energy_offer"].reshape(-1))
+
+    return is_energy_out_patches, energy_intake_sheep
+
+
+
 
 
 

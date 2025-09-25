@@ -7,6 +7,7 @@ Characteristics:
 - Agents move randomly (both linear and angular)
 - Energy/Mass/Speed trade-offs
 """
+from torch import jit
 
 from structs import *
 from functions import *
@@ -55,7 +56,7 @@ GROWTH_RATE = 0.1
 EAT_RATE = 0.3
 
 # Action parameters (sheep)
-NUM_ACTIONS = 2
+#NUM_ACTIONS = 2
 ACTION_SCALE = 1.0
 LINEAR_ACTION_SCALE = ACTION_SCALE * SHEEP_RADIUS / SHEEP_MASS_BEGIN # heavier agents are slower
 # but large but light agents are faster
@@ -89,8 +90,7 @@ PP_WORLD_PARAMS = Params(content= {"sheep_params": {"x_max": MAX_SPAWN_X,
                                                     "radius": GRASS_RADIUS,
                                                     "agent_type": GRASS_AGENT_TYPE,
                                                     "num_grass": NUM_GRASS
-                                                    },
-                                   "action_params": {"num_actions" : NUM_ACTIONS}
+                                                    }
                                    })
 
 
@@ -323,11 +323,32 @@ class Sheep(Agent):
 
         return jax.lax.cond(agent.active_state, lambda _: step_active_agent(), lambda _: step_inactive_agent(), None)
 
+    @staticmethod
+    def reset_agent(agent, reset_params):
+        x_max = agent.params.content["x_max"]
+        y_max = agent.params.content["y_max"]
+        energy_begin_max = agent.params.content["energy_begin_max"]
+        key = agent.key
 
-    # def reset_agent(agent, remove_params): # death of agent
-    #     pass
-    # handled in step_agent function
+        key, *subkeys = random.split(key, 5)
+        x = random.uniform(subkeys[0], shape=(1,), minval=-x_max, maxval=x_max)
+        y = random.uniform(subkeys[1], shape=(1,), minval=-y_max, maxval=y_max)
+        ang = random.uniform(subkeys[2], shape=(1,), minval=-jnp.pi, maxval=jnp.pi)
+        x_dot = jnp.zeros((1,), dtype=jnp.float32)
+        y_dot = jnp.zeros((1,), dtype=jnp.float32)
+        ang_dot = jnp.zeros((1,), dtype=jnp.float32)
 
+        energy = random.uniform(subkeys[3], shape=(1,), minval=0.5 * energy_begin_max, maxval=energy_begin_max)
+        fitness = jnp.array([0.0])
+
+        state_content = {"x": x, "y": y, "ang": ang, "x_dot": x_dot, "y_dot": y_dot, "ang_dot": ang_dot,
+                         "energy": energy, "fitness": fitness, "reproduce": 0, "reproduction_timer": 0.0,
+                         "death_timer": 0.0}
+        state = State(content=state_content)
+
+        return agent.replace(state=state, age=0.0, active_state=1, key=key)
+
+    @staticmethod
     def add_agent(agent, add_params): # reproduction; birth of a new agent
         parent_agent = add_params.content['agent_to_copy'] # from add_animals in ecosystem
 
@@ -354,6 +375,7 @@ class Sheep(Agent):
         params = Params(content=params_content)
         return agent.replace(state=state, params=params, active_state=1, age=0.0)
 
+    @staticmethod
     def half_energy(agent, set_params):
         state_content = {
             "x": agent.state.content["x"],
@@ -400,7 +422,140 @@ def agent_interactions(sheep: Sheep, patches: Grass):
 
     return is_energy_out_patches, energy_intake_sheep
 
+jit_agent_interactions = jax.jit(agent_interactions)
 
+@struct.dataclass
+class PredatorPreyWorld:
+    sheep_set: Set
+    grass_set: Set
+
+    @staticmethod
+    def create_world(params, key):
+        grass_params = params.content["grass_params"]
+        sheep_params = params.content["sheep_params"]
+
+        num_sheep = sheep_params["num_sheep"]
+
+        key, sheep_key = random.split(key, 2)
+
+        x_max_array = jnp.tile(jnp.array([sheep_params["x_max"]]), (num_sheep,))
+        y_max_array = jnp.tile(jnp.array([sheep_params["y_max"]]), (num_sheep,))
+        energy_begin_max_array = jnp.tile(jnp.array([sheep_params["energy_begin_max"]]), (num_sheep,))
+        radius_array = jnp.tile(jnp.array([sheep_params["radius"]]), (num_sheep,))
+        mass_array = jnp.tile(jnp.array([sheep_params["mass"]]), (num_sheep,))
+        reproduction_prob_array = jnp.tile(jnp.array([sheep_params["reproduction_prob"]]), (num_sheep,))
+
+        death_threshold_array = jnp.tile(jnp.array([sheep_params["death_threshold"]]), (num_sheep,))
+        reproduction_threshold_array = jnp.tile(jnp.array([sheep_params["reproduction_threshold"]]), (num_sheep,))
+        min_death_time_array = jnp.tile(jnp.array([sheep_params["min_death_time"]]), (num_sheep,))
+        min_reproduction_time_array = jnp.tile(jnp.array([sheep_params["min_reproduction_time"]]), (num_sheep,))
+
+        sheep_create_params = Params(content= {
+            "x_max": x_max_array,
+            "y_max": y_max_array,
+            "energy_begin_max": energy_begin_max_array,
+            "radius": radius_array,
+            "mass": mass_array,
+            "reproduction_prob": reproduction_prob_array,
+            "death_threshold": death_threshold_array,
+            "reproduction_threshold": reproduction_threshold_array,
+            "min_death_time": min_death_time_array,
+            "min_reproduction_time": min_reproduction_time_array
+        })
+
+        sheep = create_agents(agent=Sheep, params=sheep_create_params, num_agents=num_sheep, num_active_agents=num_sheep,
+                              agent_type=sheep_params["agent_type"], key=sheep_key)
+
+        sheep_set = Set(num_agents=num_sheep, num_active_agents=num_sheep, agents=sheep, id=0, set_type=sheep_params["agent_type"],
+                        params=None, state=None, policy=None, key=None)
+
+        key, grass_key = random.split(key, 2)
+
+        num_grass = grass_params["num_grass"]
+        x_max_array = jnp.tile(jnp.array([grass_params["x_max"]]), (num_grass,))
+        y_max_array = jnp.tile(jnp.array([grass_params["y_max"]]), (num_grass,))
+        energy_max_array = jnp.tile(jnp.array([grass_params["energy_stored_max"]]), (num_grass,))
+        eat_rate_array = jnp.tile(jnp.array([grass_params["eat_rate"]]), (num_grass,))
+        growth_rate_array = jnp.tile(jnp.array([grass_params["growth_rate"]]), (num_grass,))
+        radius_array = jnp.tile(jnp.array([grass_params["radius"]]), (num_grass,))
+
+        grass_create_params = Params(content= {"x_max": x_max_array,
+                                               "y_max": y_max_array,
+                                               "energy_stored_max": energy_max_array,
+                                               "eat_rate": eat_rate_array,
+                                               "growth_rate": growth_rate_array,
+                                               "radius": radius_array,
+        })
+
+        grass = create_agents(agent=Grass, params=grass_create_params, num_agents=num_grass, num_active_agents=num_grass,
+                              agent_type=grass_params["agent_type"], key=grass_key)
+
+        grass_set = Set(num_agents=num_grass, num_active_agents=num_grass, agents=grass, id=1, set_type=grass_params["agent_type"],
+                        params=None, state=None, policy=None, key=None)
+
+        return PredatorPreyWorld(sheep_set=sheep_set, grass_set=grass_set)
+
+
+def step_world(pp_world, _t):
+    sheep_set = pp_world.sheep_set
+    grass_set = pp_world.grass_set
+
+    is_energy_out_patches, energy_intake_sheep = jit_agent_interactions(sheep_set.agents, grass_set.agents)
+
+    grass_step_input = Signal(content={"is_energy_out": is_energy_out_patches})
+    grass_step_params = Params(content={"dt": Dt})
+    grass_set = jit_step_agents(Grass.step_agent, grass_step_params, grass_step_input, grass_set)
+
+    sheep_step_input = Signal(content={"energy_intake": energy_intake_sheep})
+    sheep_step_params = Params(content={"dt": Dt,
+                                        "damping": DAMPING,
+                                        "metabolic_cost_speed": METABOLIC_COST_SPEED,
+                                        "metabolic_cost_angular": METABOLIC_COST_ANGULAR,
+                                        "x_max_arena": MAX_SPAWN_X,
+                                        "y_max_arena": MAX_SPAWN_Y,
+                                        "action_scale": ACTION_SCALE,
+    })
+    sheep_set = jit_step_agents(Sheep.step_agent, sheep_step_params, sheep_step_input, sheep_set)
+
+    render_data = Signal(content={"sheep_xs": sheep_set.agents.state.content["x"].reshape(-1, 1),
+                                  "sheep_ys": sheep_set.agents.state.content["y"].reshape(-1, 1),
+                                  "sheep_angles": sheep_set.agents.state.content["ang"].reshape(-1, 1),
+                                  "grass_energies": grass_set.agents.state.content["energy"].reshape(-1, 1),
+    })
+
+    return pp_world.replace(sheep_set=sheep_set, grass_set=grass_set), render_data
+
+jit_step_world = jax.jit(step_world)
+
+
+def reset_world(pp_world):
+    sheep_set_agents = pp_world.sheep_set.agents
+    grass_set_agents = pp_world.grass_set.agents
+
+    sheep_set_agents = jax.vmap(Sheep.reset_agent)(sheep_set_agents, None)
+    grass_set_agents = jax.vmap(Grass.reset_agent)(grass_set_agents, None)
+
+    sheep_set = pp_world.sheep_set.replace(agents=sheep_set_agents)
+    grass_set = pp_world.grass_set.replace(agents=grass_set_agents)
+
+    return pp_world.replace(sheep_set=sheep_set, grass_set=grass_set)
+
+jit_reset_world = jax.jit(reset_world)
+
+
+
+def scan_episode(pp_world: PredatorPreyWorld, ts):
+    pass
+
+def run_episode(pp_world: PredatorPreyWorld):
+    pass
+
+def main():
+    pass
+
+if __name__ == "__main__":
+    main()
+    print("simulation done")
 
 
 

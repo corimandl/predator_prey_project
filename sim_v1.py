@@ -7,8 +7,7 @@ Characteristics:
 - Agents move randomly (both linear and angular)
 - Energy/Mass/Speed trade-offs
 """
-from torch import jit
-
+import os
 from structs import *
 from functions import *
 
@@ -63,10 +62,17 @@ LINEAR_ACTION_SCALE = ACTION_SCALE * SHEEP_RADIUS / SHEEP_MASS_BEGIN # heavier a
 LINEAR_ACTION_OFFSET = 0.0
 
 # Training parameters
-NUM_WORLDS = 1
-NUM_GENERATIONS = 1
+NUM_WORLDS = 10
+NUM_GENERATIONS = 10
 POPULATION_SIZE = NUM_SHEEP
 EP_LEN = 500
+
+FITNESS_THRESH_SAVE = 150.0 # threshold for saving render data
+FITNESS_THRESH_SAVE_STEP = 10.0 # the amount by which we increase the threshold for saving render data
+
+# save data
+DATA_PATH = "./data/"
+
 
 # Predator-prey world parameters
 PP_WORLD_PARAMS = Params(content= {"sheep_params": {"x_max": MAX_SPAWN_X,
@@ -123,7 +129,7 @@ class Grass(Agent):
         params_content = {"growth_rate": growth_rate, "eat_rate": eat_rate, "radius": radius, "x_max": x_max, "y_max": y_max, "energy_stored_max": energy_stored_max}
         params = Params(content=params_content)
 
-        return Grass(id=id, state=state, params=params, active_state=active_state, agent_type=type, age = 0.0, key=key)
+        return Grass(id=id, state=state, params=params, active_state=active_state, agent_type=type, age = 0.0, key=key, policy=None)
 
     @staticmethod
     def step_agent(agent, input, step_params): # where from step_params?
@@ -223,7 +229,7 @@ class Sheep(Agent):
         def step_active_agent():
             # input
             energy_intake = input.content["energy_intake"] # 'energy_in_foragers' in step_world
-            is_on_grass = input.content["is_on_grass"] # => compute in 'sheep_grass_interaction' in agent_interactions
+            #is_on_grass = input.content["is_on_grass"] # => compute in 'sheep_grass_interaction' in agent_interactions
 
             # current agent state
             energy = agent.state.content["energy"]
@@ -410,7 +416,7 @@ def agent_interactions(sheep: Sheep, patches: Grass):
         return in_patches_num, is_near_patch
 
     in_patches_nums, is_near_patch_matrix = jax.vmap(sheep_grass_interaction, in_axes=(0, None))(sheep, patches)
-    is_energy_out_patches = jnp.any(is_near_patch_matrix, axis=1) # t/f if grass patch is being eaten by any sheep
+    is_energy_out_patches = jnp.any(is_near_patch_matrix, axis=0) # t/f if grass patch is being eaten by any sheep
 
     num_sheep_at_patch = jnp.maximum(jnp.sum(is_near_patch_matrix, axis=0), 1.0) # number of sheep present per grass patch (maximum; avoid dividing by 0)
     energy_sharing_matrix = jnp.divide(is_near_patch_matrix, num_sheep_at_patch)
@@ -442,7 +448,7 @@ class PredatorPreyWorld:
         y_max_array = jnp.tile(jnp.array([sheep_params["y_max"]]), (num_sheep,))
         energy_begin_max_array = jnp.tile(jnp.array([sheep_params["energy_begin_max"]]), (num_sheep,))
         radius_array = jnp.tile(jnp.array([sheep_params["radius"]]), (num_sheep,))
-        mass_array = jnp.tile(jnp.array([sheep_params["mass"]]), (num_sheep,))
+        mass_array = jnp.tile(jnp.array([sheep_params["mass_begin"]]), (num_sheep,))
         reproduction_prob_array = jnp.tile(jnp.array([sheep_params["reproduction_prob"]]), (num_sheep,))
 
         death_threshold_array = jnp.tile(jnp.array([sheep_params["death_threshold"]]), (num_sheep,))
@@ -455,7 +461,7 @@ class PredatorPreyWorld:
             "y_max": y_max_array,
             "energy_begin_max": energy_begin_max_array,
             "radius": radius_array,
-            "mass": mass_array,
+            "mass_begin": mass_array,
             "reproduction_prob": reproduction_prob_array,
             "death_threshold": death_threshold_array,
             "reproduction_threshold": reproduction_threshold_array,
@@ -514,6 +520,11 @@ def step_world(pp_world, _t):
                                         "x_max_arena": MAX_SPAWN_X,
                                         "y_max_arena": MAX_SPAWN_Y,
                                         "action_scale": ACTION_SCALE,
+                                        "reproduction_prob": REPRODUCTION_PROB,
+                                        "reproduction_threshold": REPRODUCTION_THRESHOLD,
+                                        "min_reproduction_time": MIN_REPRODUCTION_TIME,
+                                        "death_threshold": DEATH_THRESHOLD,
+                                        "min_death_time": MIN_DEATH_TIME
     })
     sheep_set = jit_step_agents(Sheep.step_agent, sheep_step_params, sheep_step_input, sheep_set)
 
@@ -543,19 +554,90 @@ def reset_world(pp_world):
 jit_reset_world = jax.jit(reset_world)
 
 
-
 def scan_episode(pp_world: PredatorPreyWorld, ts):
-    pass
+    return jax.lax.scan(jit_step_world, pp_world, ts)
+
+jit_scan_episode = jax.jit(scan_episode)
 
 def run_episode(pp_world: PredatorPreyWorld):
-    pass
+    ts = jnp.arange(EP_LEN)
+    pp_world = jit_reset_world(pp_world)
+    pp_world, render_data = jit_scan_episode(pp_world, ts)
+    render_data = Signal(content={
+        "sheep_xs": render_data.content["sheep_xs"],
+        "sheep_ys": render_data.content["sheep_ys"],
+        "sheep_angles": render_data.content["sheep_angles"],
+        "grass_xs": pp_world.grass_set.agents.state.content["x"].reshape(-1,),
+        "grass_ys": pp_world.grass_set.agents.state.content["y"].reshape(-1,),
+        "grass_energies": render_data.content["grass_energies"]
+    })
+    return pp_world, render_data
+
+jit_run_episode = jax.jit(run_episode)
+
+def get_fitness(pp_worlds):
+    """
+    Run episodes and calculate fitness for predator-prey worlds
+    Args:
+        - pp_worlds: Array of PredatorPreyWorld instances
+    Returns:
+        - fitness: Mean fitness across all sheep in all worlds
+        - pp_worlds: Updated worlds after running episodes
+    """
+    pp_worlds, render_data = jax.vmap(jit_run_episode)(pp_worlds)
+    fitness = jnp.mean(pp_worlds.sheep_set.agents.state.content["fitness"], axis=0)
+    fitness = jnp.reshape(fitness, (-1))
+
+    return fitness, pp_worlds
+
+jit_get_fitness = jax.jit(get_fitness)
+
 
 def main():
-    pass
+    key, *pp_world_keys = random.split(KEY, NUM_WORLDS+1)
+    pp_world_keys = jnp.array(pp_world_keys)
+
+    pp_worlds = jax.vmap(PredatorPreyWorld.create_world, in_axes=(None,0))(PP_WORLD_PARAMS, pp_world_keys)
+
+    key, subkey = random.split(key)
+
+    mean_fitness_list = []
+    saved_fitness_list = []
+    render_data_list = []
+    fitness_thresh_save = FITNESS_THRESH_SAVE
+
+    print(f"Starting simulation with {NUM_WORLDS} worlds, {NUM_GENERATIONS} generations")
+
+    for generation in range(NUM_GENERATIONS):
+        fitness, pp_worlds = jit_get_fitness(pp_worlds)
+
+        mean_fitness = jnp.mean(fitness)
+        best_fitness = jnp.max(fitness)
+        worst_fitness = jnp.min(fitness)
+        mean_fitness_list.append(mean_fitness)
+
+        if mean_fitness > fitness_thresh_save:
+            fitness_thresh_save += FITNESS_THRESH_SAVE_STEP
+            saved_fitness_list.append(mean_fitness)
+
+        print('Generation:', generation, 'Mean Fitness:', mean_fitness, 'Best Fitness:', best_fitness, 'Worst Fitness:', worst_fitness)
+
+    # save data
+    mean_fitness_array = jnp.array(mean_fitness_list)
+    saved_fitness_array = jnp.array(saved_fitness_list)
+
+    os.makedirs(DATA_PATH, exist_ok=True)
+    jnp.save(DATA_PATH + 'mean_fitness_list.npy', mean_fitness_array)
+    jnp.save(DATA_PATH + 'saved_fitness_list.npy', saved_fitness_array)
+    jnp.save(DATA_PATH + 'final_key.npy', jnp.array(key))
+    jnp.save(DATA_PATH + 'render_data_list.npy', render_data_list)
+
+    print(f"Simulation completed. Data saved to {DATA_PATH}")
+
+
 
 if __name__ == "__main__":
     main()
-    print("simulation done")
 
 
 

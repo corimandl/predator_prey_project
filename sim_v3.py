@@ -1,11 +1,12 @@
 """
-Second version of AB predator-prey simulation
+Third version of AB predator-prey simulation
 
 Characteristics:
 - One species only (prey; sheep)
 - One resource; grass patches
 - Agents move randomly (both linear and angular)
-- no Energy/Mass/Speed trade-offs: fixed speed, fixed metabolic cost
+- No Energy/Mass/Speed trade-offs: fixed speed, fixed metabolic cost
+- No reproduction and death dynamics
 """
 import os
 from structs import *
@@ -34,12 +35,6 @@ SHEEP_RADIUS = 5.0
 SHEEP_ENERGY_BEGIN_MAX = 50.0
 SHEEP_MASS_BEGIN = 5.0 # initial sheep mass at birth
 SHEEP_AGENT_TYPE = 1
-
-DEATH_THRESHOLD = 5.0 # energy
-MIN_DEATH_TIME = 5.0 # time energy needs to be below threshold for the agent to die
-REPRODUCTION_THRESHOLD = 30.0 # energy
-MIN_REPRODUCTION_TIME = 5.0 # time energy needs to be above threshold for the agent to reproduce
-REPRODUCTION_PROB = 0.1
 
 METABOLIC_COST_SPEED = 0.01
 METABOLIC_COST_ANGULAR = 0.05
@@ -81,11 +76,6 @@ PP_WORLD_PARAMS = Params(content= {"sheep_params": {"x_max": MAX_SPAWN_X,
                                                     "radius": SHEEP_RADIUS,
                                                     "agent_type": SHEEP_AGENT_TYPE,
                                                     "num_sheep": NUM_SHEEP,
-                                                    "reproduction_prob": REPRODUCTION_PROB,
-                                                    "death_threshold": DEATH_THRESHOLD,
-                                                    "reproduction_threshold": REPRODUCTION_THRESHOLD,
-                                                    "min_death_time": MIN_DEATH_TIME,
-                                                    "min_reproduction_time": MIN_REPRODUCTION_TIME
                                                     },
                                    "grass_params": {"x_max": MAX_SPAWN_X,
                                                     "y_max": MAX_SPAWN_Y,
@@ -184,11 +174,10 @@ class Sheep(Agent):
         energy_begin_max = params.content["energy_begin_max"]
         radius = params.content["radius"]
         mass_begin = params.content["mass_begin"]  # initial mass
-        reproduction_prob = params.content["reproduction_prob"]
 
         key, *subkeys = random.split(key, 5)
 
-        params_content = {"radius": radius, "x_max": x_max, "y_max": y_max, "energy_begin_max": energy_begin_max, "mass": mass_begin, "reproduction_prob": reproduction_prob}
+        params_content = {"radius": radius, "x_max": x_max, "y_max": y_max, "energy_begin_max": energy_begin_max, "mass": mass_begin}
         params = Params(content=params_content)
 
         def create_active_agent():
@@ -203,14 +192,14 @@ class Sheep(Agent):
             energy = random.uniform(subkeys[3], shape=(1,), minval=0.5 * energy_begin_max, maxval=energy_begin_max)
             fitness = jnp.array([0.0])
 
-            state_content = {"x": x, "y": y, "ang": ang, "x_dot": x_dot, "y_dot": y_dot, "ang_dot": ang_dot, "energy": energy, "fitness": fitness, "reproduce": 0, "reproduction_timer": 0.0, "death_timer": 0.0}
+            state_content = {"x": x, "y": y, "ang": ang, "x_dot": x_dot, "y_dot": y_dot, "ang_dot": ang_dot, "energy": energy, "fitness": fitness}
             state = State(content=state_content)
             return state
 
         def create_inactive_agent():
             state_content = {"x": jnp.array([-1.0]), "y": jnp.array([-1.0]), "ang": jnp.array([0.0]),
                              "x_dot": jnp.zeros((1,)), "y_dot": jnp.zeros((1,)), "ang_dot": jnp.zeros((1,)),
-                             "energy": jnp.array([-1.0]), "fitness": jnp.array([-1.0]), "reproduce": 0, "reproduction_timer": 0.0, "death_timer": 0.0} # placeholder values
+                             "energy": jnp.array([-1.0]), "fitness": jnp.array([-1.0])} # placeholder values
             state = State(content=state_content)
 
             return state
@@ -269,47 +258,10 @@ class Sheep(Agent):
             energy_new = energy + energy_intake - metabolic_cost
             fitness_new = energy_new # for now: fitness is energy
 
-            # reproduction: energy needs to be high enough (>threshold) for a certain amount of time + specific probability
-            reproduction_prob = step_params.content["reproduction_prob"]
-            reproduction_threshold = step_params.content["reproduction_threshold"]
-            min_reproduction_time = step_params.content["min_reproduction_time"]
-            current_timer = agent.state.content["reproduction_timer"]
-
-            above_threshold = energy_new[0] >= reproduction_threshold
-            new_timer = jax.lax.cond(
-                above_threshold,
-                lambda _: current_timer + dt, # increment timer if above threshold
-                lambda _: 0.0, # reset timer if below threshold
-                None
-            )
-            can_reproduce = new_timer >= min_reproduction_time
-
-            key, reproduce_key = random.split(key)
-            rand_float = jax.random.uniform(reproduce_key, shape=(1,))
-            reproduce = jax.lax.cond(
-                jnp.logical_and(can_reproduce, rand_float[0] < reproduction_prob),
-                lambda _: 1,
-                lambda _: 0, None
-            )
-            final_timer = jax.lax.cond(reproduce == 1, lambda _: 0.0, lambda _: new_timer, None) # reset timer if reproduction occurred
-
-            # death: energy needs to be low enough (<=threshold) for a certain amount of time (min_death_time)
-            death_threshold = step_params.content["death_threshold"]
-            min_death_time = step_params.content["min_death_time"]
-            current_death_timer = agent.state.content["death_timer"]
-
-            below_threshold = energy_new[0] <= death_threshold
-            new_death_timer = jax.lax.cond(
-                below_threshold,
-                lambda _: current_death_timer + dt,
-                lambda _: 0.0,
-                None
-            )
-            agent_is_dead = new_death_timer >= min_death_time
+            agent_is_dead = energy_new[0] <= 0.0
 
             new_state_content = {"x": x_new, "y": y_new, "x_dot": x_dot_new, "y_dot": y_dot_new, "ang": ang_new, "ang_dot": ang_dot_new,
-                                 "energy": energy_new, "fitness": fitness_new, "reproduce": reproduce, "reproduction_timer": final_timer,
-                                 "death_timer": new_death_timer}
+                                 "energy": energy_new, "fitness": fitness_new}
             new_state = State(content=new_state_content)
 
             return jax.lax.cond(
@@ -342,56 +294,10 @@ class Sheep(Agent):
         fitness = jnp.array([0.0])
 
         state_content = {"x": x, "y": y, "ang": ang, "x_dot": x_dot, "y_dot": y_dot, "ang_dot": ang_dot,
-                         "energy": energy, "fitness": fitness, "reproduce": 0, "reproduction_timer": 0.0,
-                         "death_timer": 0.0}
+                         "energy": energy, "fitness": fitness}
         state = State(content=state_content)
 
         return agent.replace(state=state, age=0.0, active_state=1, key=key)
-
-    @staticmethod
-    def add_agent(agent, add_params): # reproduction; birth of a new agent
-        parent_agent = add_params.content['agent_to_copy'] # from add_animals in ecosystem
-
-        x = parent_agent.state.content["x"]
-        y = parent_agent.state.content["y"]
-        ang = parent_agent.state.content["ang"]
-        energy = parent_agent.state.content["energy"]/2 # baby receives half the energy of parent
-        fitness = parent_agent.state.content["fitness"]/2 # since fitness is the energy it also has to be halved
-
-        x_dot = jnp.zeros((1,), dtype=jnp.float32)
-        y_dot = jnp.zeros((1,), dtype=jnp.float32)
-        ang_dot = jnp.zeros((1,), dtype=jnp.float32)
-
-        state_content = {"x": x, "y": y, "ang": ang, "x_dot": x_dot, "y_dot": y_dot, "ang_dot": ang_dot, "energy": energy, "fitness": fitness, "reproduce": 0, "reproduction_timer": 0, "death_timer": 0}
-        state = State(content=state_content)
-
-        params_content = {"radius": parent_agent.params.content["radius"],
-                          "x_max": parent_agent.params.content["x_max"],
-                          "y_max": parent_agent.params.content["y_max"],
-                          "energy_begin_max": parent_agent.params.content["energy_begin_max"],
-                          "mass": parent_agent.params.content["mass"],
-                          "reproduction_prob": parent_agent.params.content["reproduction_prob"]
-        }
-        params = Params(content=params_content)
-        return agent.replace(state=state, params=params, active_state=1, age=0.0)
-
-    @staticmethod
-    def half_energy(agent, set_params):
-        state_content = {
-            "x": agent.state.content["x"],
-            "y": agent.state.content["y"],
-            "ang": agent.state.content["ang"],
-            "x_dot": agent.state.content["x_dot"],
-            "y_dot": agent.state.content["y_dot"],
-            "ang_dot": agent.state.content["ang_dot"],
-            "energy": agent.state.content["energy"] / 2,  # parent loses half energy
-            "fitness": agent.state.content["fitness"] / 2, # parent loses half fitness - q: reproduction limits agents survival for later episodes?
-            "reproduce": 0,  # reset reproduce flag after reproduction
-            "reproduction_timer": 0.0,  # reset reproduction timer
-            "death_timer": agent.state.content["death_timer"]
-        }
-        state = State(content=state_content)
-        return agent.replace(state=state)
 
 
 def agent_interactions(sheep: Sheep, patches: Grass):
@@ -443,24 +349,14 @@ class PredatorPreyWorld:
         energy_begin_max_array = jnp.tile(jnp.array([sheep_params["energy_begin_max"]]), (num_sheep,))
         radius_array = jnp.tile(jnp.array([sheep_params["radius"]]), (num_sheep,))
         mass_array = jnp.tile(jnp.array([sheep_params["mass_begin"]]), (num_sheep,))
-        reproduction_prob_array = jnp.tile(jnp.array([sheep_params["reproduction_prob"]]), (num_sheep,))
 
-        death_threshold_array = jnp.tile(jnp.array([sheep_params["death_threshold"]]), (num_sheep,))
-        reproduction_threshold_array = jnp.tile(jnp.array([sheep_params["reproduction_threshold"]]), (num_sheep,))
-        min_death_time_array = jnp.tile(jnp.array([sheep_params["min_death_time"]]), (num_sheep,))
-        min_reproduction_time_array = jnp.tile(jnp.array([sheep_params["min_reproduction_time"]]), (num_sheep,))
 
         sheep_create_params = Params(content= {
             "x_max": x_max_array,
             "y_max": y_max_array,
             "energy_begin_max": energy_begin_max_array,
             "radius": radius_array,
-            "mass_begin": mass_array,
-            "reproduction_prob": reproduction_prob_array,
-            "death_threshold": death_threshold_array,
-            "reproduction_threshold": reproduction_threshold_array,
-            "min_death_time": min_death_time_array,
-            "min_reproduction_time": min_reproduction_time_array
+            "mass_begin": mass_array
         })
 
         sheep = create_agents(agent=Sheep, params=sheep_create_params, num_agents=num_sheep, num_active_agents=num_sheep,
@@ -513,11 +409,6 @@ def step_world(pp_world, _t):
                                         "metabolic_cost_angular": METABOLIC_COST_ANGULAR,
                                         "x_max_arena": MAX_SPAWN_X,
                                         "y_max_arena": MAX_SPAWN_Y,
-                                        "reproduction_prob": REPRODUCTION_PROB,
-                                        "reproduction_threshold": REPRODUCTION_THRESHOLD,
-                                        "min_reproduction_time": MIN_REPRODUCTION_TIME,
-                                        "death_threshold": DEATH_THRESHOLD,
-                                        "min_death_time": MIN_DEATH_TIME
     })
     sheep_set = jit_step_agents(Sheep.step_agent, sheep_step_params, sheep_step_input, sheep_set)
 

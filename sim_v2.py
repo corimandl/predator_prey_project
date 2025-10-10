@@ -1,11 +1,12 @@
 """
-First version of AB predator-prey simulation
+Second version of AB predator-prey simulation
 
 Characteristics:
 - One species only (prey; sheep)
 - One resource; grass patches
 - Agents move randomly (both linear and angular)
-- Energy/Mass/Speed trade-offs
+- no Energy/Mass/Speed trade-offs
+- no reproduction ans birth dynamics
 """
 import os
 from structs import *
@@ -15,7 +16,7 @@ import jax.numpy as jnp
 import jax.random as random
 import jax
 from flax import struct
-
+#from evosax import CMA_ES
 
 MAX_WORLD_X = 10000.0
 MAX_WORLD_Y = 10000.0
@@ -236,8 +237,8 @@ class Sheep(Agent):
             x = agent.state.content["x"]
             y = agent.state.content["y"]
             ang = agent.state.content["ang"]
-            x_dot = agent.state.content["x_dot"]
-            y_dot = agent.state.content["y_dot"]
+            x_dot = agent.state.content["x_dot"] # current x_velocity
+            y_dot = agent.state.content["y_dot"] # current y_velocity
             ang_dot = agent.state.content["ang_dot"]
 
             dt = step_params.content["dt"]
@@ -253,12 +254,11 @@ class Sheep(Agent):
             forward_action = jax.random.uniform(subkeys[0], (), minval=0.0, maxval=1.0)
             angular_action = jax.random.uniform(subkeys[1], (), minval=-1.0, maxval=1.0)
 
-            base_speed = (LINEAR_ACTION_OFFSET + LINEAR_ACTION_SCALE * forward_action) # depends on agent mass
-            energy_factor = jnp.clip(energy[0]/50.0, 0.1, 1.0) # reduce speed based on available energy
+            # fixed base speed (with noise)
+            speed = (LINEAR_ACTION_OFFSET + LINEAR_ACTION_SCALE * forward_action) * (1 + NOISE_SCALE * jax.random.normal(subkeys[2], ()))
+            ang_speed = angular_action * (1 + NOISE_SCALE * jax.random.normal(subkeys[3], ()))
 
-            speed = base_speed * energy_factor * (1 + NOISE_SCALE * jax.random.normal(subkeys[2], ()))
-            ang_speed = angular_action * energy_factor * (1 + NOISE_SCALE * jax.random.normal(subkeys[3], ()))
-
+            # updated positions
             x_new = jnp.clip(x + dt*x_dot, -x_max_arena, x_max_arena) # no wrap-around for now; may change it later
             y_new = jnp.clip(y + dt*y_dot, -y_max_arena, y_max_arena)
             ang_new = jnp.mod(ang + dt*ang_dot + jnp.pi, 2*jnp.pi) - jnp.pi
@@ -267,10 +267,8 @@ class Sheep(Agent):
             y_dot_new = speed * jnp.sin(ang) - dt * y_dot * damping
             ang_dot_new = ang_speed - dt * ang_dot * damping
 
-            # speed-endurance tradeoff; energy consumption scales quadratically with speed
-            metabolic_cost = metabolic_cost_speed * (jnp.abs(speed) / ACTION_SCALE) ** 2 + metabolic_cost_angular * jnp.abs(ang_speed) / ACTION_SCALE + BASIC_METABOLIC_COST
-            # slow movement: energy efficient -> possible for longer periods of time
-            # fast movement: uses more energy -> possible only for short periods of time
+            # fixed metabolic cost
+            metabolic_cost = BASIC_METABOLIC_COST
             energy_new = energy + energy_intake - metabolic_cost
             fitness_new = energy_new # for now: fitness is energy
 

@@ -506,6 +506,7 @@ def main():
 
         print('Generation:', generation, 'Mean Fitness:', mean_fitness, 'Best Fitness:', best_fitness, 'Worst Fitness:', worst_fitness)
 
+
     # save data
     mean_fitness_array = jnp.array(mean_fitness_list)
     saved_fitness_array = jnp.array(saved_fitness_list)
@@ -517,6 +518,8 @@ def main():
     jnp.save(DATA_PATH + 'render_data_list.npy', render_data_list)
 
     print(f"Simulation completed. Data saved to {DATA_PATH}")
+
+
 
 
 

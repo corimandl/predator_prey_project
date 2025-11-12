@@ -7,6 +7,8 @@ Characteristics:
 - Agents move randomly (both linear and angular)
 - No Energy/Mass/Speed trade-offs: fixed speed, fixed metabolic cost
 - No reproduction and death dynamics
+
+- storing separate files for render data
 """
 import os
 from structs import *
@@ -201,7 +203,6 @@ class Sheep(Agent):
                              "x_dot": jnp.zeros((1,)), "y_dot": jnp.zeros((1,)), "ang_dot": jnp.zeros((1,)),
                              "energy": jnp.array([-1.0]), "fitness": jnp.array([-1.0])} # placeholder values
             state = State(content=state_content)
-
             return state
 
         agent_state = jax.lax.cond(active_state, lambda _: create_active_agent(),
@@ -512,9 +513,11 @@ def main():
             fitness_thresh_save += FITNESS_THRESH_SAVE_STEP
             saved_fitness_list.append(mean_fitness)
 ###
-        _, render_data_all = jax.vmap(jit_run_episode)(pp_worlds) # is this accessed correctly?
+        _, render_data_all = jax.vmap(jit_run_episode)(pp_worlds) # is this accessed correctly? how to get correct shape?
 
-        # Extract sheep/grass data from all worlds at once
+
+
+        # extract sheep/grass data from all worlds at once
         sheep_xs_list.append(render_data_all.content["sheep_xs"])
         sheep_ys_list.append(render_data_all.content["sheep_ys"])
         sheep_angles_list.append(render_data_all.content["sheep_angles"])
@@ -525,7 +528,7 @@ def main():
 
         print('Generation:', generation, 'Mean Fitness:', mean_fitness, 'Best Fitness:', best_fitness, 'Worst Fitness:', worst_fitness)
 
-
+    # exceed threshold -> save
     # save data
     mean_fitness_array = jnp.array(mean_fitness_list)
     saved_fitness_array = jnp.array(saved_fitness_list)

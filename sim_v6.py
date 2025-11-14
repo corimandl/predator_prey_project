@@ -40,6 +40,7 @@ SHEEP_RADIUS = 5.0
 SHEEP_ENERGY_BEGIN_MAX = 50.0
 SHEEP_MASS_BEGIN = 5.0 # initial sheep mass at birth
 SHEEP_AGENT_TYPE = 1
+EAT_RATE_SHEEP = 0.4
 
 # Wolf parameters
 NUM_WOLF = 100
@@ -79,7 +80,7 @@ FITNESS_THRESH_SAVE = 150.0 # threshold for saving render data
 FITNESS_THRESH_SAVE_STEP = 10.0 # the amount by which we increase the threshold for saving render data
 
 # save data
-DATA_PATH = "./data/"
+DATA_PATH = "./data/sheep_wolf_data/"
 
 
 # Predator-prey world parameters
@@ -87,6 +88,7 @@ PP_WORLD_PARAMS = Params(content= {"sheep_params": {"x_max": MAX_SPAWN_X,
                                                     "y_max": MAX_SPAWN_Y,
                                                     "energy_begin_max": SHEEP_ENERGY_BEGIN_MAX,
                                                     "mass_begin": SHEEP_MASS_BEGIN,
+                                                    "eat_rate": EAT_RATE_SHEEP,
                                                     "radius": SHEEP_RADIUS,
                                                     "agent_type": SHEEP_AGENT_TYPE,
                                                     "num_sheep": NUM_SHEEP,
@@ -191,15 +193,16 @@ class Grass(Agent):
 class Sheep(Agent):
     @staticmethod
     def create_agent(type, params, id, active_state, key):
+        key, *subkeys = random.split(key, 5)
+
         x_max = params.content["x_max"]
         y_max = params.content["y_max"]
         energy_begin_max = params.content["energy_begin_max"]
+        eat_rate = params.content["eat_rate"]
         radius = params.content["radius"]
         mass_begin = params.content["mass_begin"]  # initial mass
 
-        key, *subkeys = random.split(key, 5)
-
-        params_content = {"radius": radius, "x_max": x_max, "y_max": y_max, "energy_begin_max": energy_begin_max, "mass": mass_begin}
+        params_content = {"radius": radius, "x_max": x_max, "y_max": y_max, "energy_begin_max": energy_begin_max, "mass": mass_begin, "eat_rate": eat_rate}
         params = Params(content=params_content)
 
         def create_active_agent():
@@ -213,15 +216,16 @@ class Sheep(Agent):
 
             energy = random.uniform(subkeys[3], shape=(1,), minval=0.5 * energy_begin_max, maxval=energy_begin_max)
             fitness = jnp.array([0.0])
+            energy_offer = energy * eat_rate
 
-            state_content = {"x": x, "y": y, "ang": ang, "x_dot": x_dot, "y_dot": y_dot, "ang_dot": ang_dot, "energy": energy, "fitness": fitness}
+            state_content = {"x": x, "y": y, "ang": ang, "x_dot": x_dot, "y_dot": y_dot, "ang_dot": ang_dot, "energy": energy, "fitness": fitness, "energy_offer": energy_offer}
             state = State(content=state_content)
             return state
 
         def create_inactive_agent():
             state_content = {"x": jnp.array([-1.0]), "y": jnp.array([-1.0]), "ang": jnp.array([0.0]),
                              "x_dot": jnp.zeros((1,)), "y_dot": jnp.zeros((1,)), "ang_dot": jnp.zeros((1,)),
-                             "energy": jnp.array([-1.0]), "fitness": jnp.array([-1.0])} # placeholder values
+                             "energy": jnp.array([-1.0]), "fitness": jnp.array([-1.0]), "energy_offer": jnp.array([-1.0])} # placeholder values
             state = State(content=state_content)
             return state
 
@@ -234,11 +238,14 @@ class Sheep(Agent):
     def step_agent(agent, input, step_params):
         def step_active_agent():
             # input
-            energy_intake = input.content["energy_intake"] # 'energy_in_foragers' in step_world
+            energy_intake = input.content["energy_intake"] # also handles energy output (if eaten by wolves)
+            # is_energy_out = input.content["is_energy_out"] # T/F (whether sheep ate grass or not) - not needed
 
             # current agent state
             energy = agent.state.content["energy"]
             fitness = agent.state.content["fitness"]
+            #energy_offer = agent.state.content["energy_offer"]
+
             x = agent.state.content["x"]
             y = agent.state.content["y"]
             ang = agent.state.content["ang"]
@@ -250,6 +257,8 @@ class Sheep(Agent):
             damping = step_params.content["damping"]
             x_max_arena = step_params.content["x_max_arena"]
             y_max_arena = step_params.content["y_max_arena"]
+
+            eat_rate = agent.params.content["eat_rate"]
 
             key, *subkeys = random.split(agent.key, 5)
 
@@ -273,13 +282,15 @@ class Sheep(Agent):
 
             # fixed metabolic cost
             metabolic_cost = BASIC_METABOLIC_COST_SHEEP
-            energy_new = energy + energy_intake - metabolic_cost
+            energy_new = energy + energy_intake - metabolic_cost # energy_intake already includes loss to wolves
+
+            new_energy_offer = energy_new * eat_rate
             fitness_new = energy_new # for now: fitness is energy
 
             agent_is_dead = energy_new[0] <= 0.0
 
             new_state_content = {"x": x_new, "y": y_new, "x_dot": x_dot_new, "y_dot": y_dot_new, "ang": ang_new, "ang_dot": ang_dot_new,
-                                 "energy": energy_new, "fitness": fitness_new}
+                                 "energy": energy_new, "fitness": fitness_new, "energy_offer": new_energy_offer}
             new_state = State(content=new_state_content)
 
             return jax.lax.cond(
@@ -298,6 +309,7 @@ class Sheep(Agent):
         x_max = agent.params.content["x_max"]
         y_max = agent.params.content["y_max"]
         energy_begin_max = agent.params.content["energy_begin_max"]
+        eat_rate = agent.params.content["eat_rate"]
         key = agent.key
 
         key, *subkeys = random.split(key, 5)
@@ -309,10 +321,11 @@ class Sheep(Agent):
         ang_dot = jnp.zeros((1,), dtype=jnp.float32)
 
         energy = random.uniform(subkeys[3], shape=(1,), minval=0.5 * energy_begin_max, maxval=energy_begin_max)
+        energy_offer = eat_rate * energy
         fitness = jnp.array([0.0])
 
         state_content = {"x": x, "y": y, "ang": ang, "x_dot": x_dot, "y_dot": y_dot, "ang_dot": ang_dot,
-                         "energy": energy, "fitness": fitness}
+                         "energy": energy, "fitness": fitness, "energy_offer": energy_offer}
         state = State(content=state_content)
 
         return agent.replace(state=state, age=0.0, active_state=1, key=key)
@@ -487,7 +500,7 @@ def wolves_sheep_interactions(sheep: Sheep, wolves: Wolf):
         sheep_radius = sheep.params.content["radius"]
 
         distances = jnp.linalg.norm(jnp.stack((xs_sheep - x_wolf, ys_sheep - y_wolf), axis=1), axis=1).reshape(-1)
-        is_in_range = jnp.where(distances < sheep_radius, 1.0, 0.0)
+        is_in_range = jnp.where(distances < wolf_radius, 1.0, 0.0)
 
         # find the closest sheep; wolf can only catch one sheep at a time
         distances_masked = jnp.where(is_in_range > 0, distances, jnp.inf)
@@ -500,20 +513,20 @@ def wolves_sheep_interactions(sheep: Sheep, wolves: Wolf):
         return is_catching_sheep
 
     is_catching_matrix = jax.vmap(wolf_sheep_interaction, in_axes=(0, None))(wolves, sheep) # shape (num_wolves, num_sheep)
-    is_being_caught = jnp.any(is_catching_matrix, axis=0)  # shape (num_sheep,)
+    is_being_fed_on = jnp.any(is_catching_matrix, axis=0)  # shape (num_sheep,) - t/f if sheep is being fed on by any wolf
 
     #split energy among wolves if multiple wolves target same sheep
     num_wolves_at_sheep = jnp.maximum(jnp.sum(is_catching_matrix, axis=0), 1.0)
     energy_sharing_matrix = jnp.divide(is_catching_matrix, num_wolves_at_sheep)
 
-    energy_offer_per_sheep = sheep.state.content["energy"].reshape(-1)
+    energy_offer_per_sheep = sheep.state.content["energy"].reshape(-1) * EAT_RATE_SHEEP
 
     # calculate energy intake for each wolf
     energy_intake_wolves = jnp.multiply(energy_sharing_matrix, energy_offer_per_sheep)
     energy_intake_wolves = jnp.sum(energy_intake_wolves, axis=1).reshape(-1)
 
     # calculate energy loss for each sheep
-    energy_loss_sheep = jnp.where(is_being_caught, energy_offer_per_sheep, 0.0)
+    energy_loss_sheep = jnp.where(is_being_fed_on, energy_offer_per_sheep, 0.0)
 
     return energy_loss_sheep, energy_intake_wolves
 
@@ -534,7 +547,6 @@ class PredatorPreyWorld:
         sheep_params = params.content["sheep_params"]
         wolf_params = params.content["wolf_params"]
 
-
         num_sheep = sheep_params["num_sheep"]
 
         key, sheep_key = random.split(key, 2)
@@ -542,6 +554,7 @@ class PredatorPreyWorld:
         x_max_array = jnp.tile(jnp.array([sheep_params["x_max"]]), (num_sheep,))
         y_max_array = jnp.tile(jnp.array([sheep_params["y_max"]]), (num_sheep,))
         energy_begin_max_array = jnp.tile(jnp.array([sheep_params["energy_begin_max"]]), (num_sheep,))
+        eat_rate_array = jnp.tile(jnp.array([sheep_params["eat_rate"]]), (num_sheep,))
         radius_array = jnp.tile(jnp.array([sheep_params["radius"]]), (num_sheep,))
         mass_array = jnp.tile(jnp.array([sheep_params["mass_begin"]]), (num_sheep,))
 
@@ -550,6 +563,7 @@ class PredatorPreyWorld:
             "x_max": x_max_array,
             "y_max": y_max_array,
             "energy_begin_max": energy_begin_max_array,
+            "eat_rate": eat_rate_array,
             "radius": radius_array,
             "mass_begin": mass_array
         })
@@ -585,9 +599,29 @@ class PredatorPreyWorld:
         grass_set = Set(num_agents=num_grass, num_active_agents=num_grass, agents=grass, id=1, set_type=grass_params["agent_type"],
                         params=None, state=None, policy=None, key=None)
 
-        # add wolves !!
+        num_wolf = wolf_params["num_wolf"]
+        key, wolf_key = random.split(key, 2)
+        x_max_array = jnp.tile(jnp.array([wolf_params["x_max"]]), (num_wolf,))
+        y_max_array = jnp.tile(jnp.array([wolf_params["y_max"]]), (num_wolf,))
+        energy_begin_max_array = jnp.tile(jnp.array([wolf_params["energy_begin_max"]]), (num_wolf,))
+        radius_array = jnp.tile(jnp.array([wolf_params["radius"]]), (num_wolf,))
+        mass_array = jnp.tile(jnp.array([wolf_params["mass_begin"]]), (num_wolf,))
 
-        return PredatorPreyWorld(sheep_set=sheep_set, grass_set=grass_set)
+        wolf_create_params = Params(content= {"x_max": x_max_array,
+                                              "y_max": y_max_array,
+                                              "energy_begin_max": energy_begin_max_array,
+                                              "radius": radius_array,
+                                              "mass_begin": mass_array
+        })
+
+        wolves = create_agents(agent=Wolf, params=wolf_create_params, num_agents=num_wolf, num_active_agents=num_wolf,
+                               agent_type=wolf_params["agent_type"], key=wolf_key)
+
+        wolf_set = Set(num_agents=num_wolf, num_active_agents=num_wolf, agents=wolves, id=2, set_type=wolf_params["agent_type"],
+                       params=None, state=None, policy=None, key=None)
+
+
+        return PredatorPreyWorld(sheep_set=sheep_set, grass_set=grass_set, wolf_set=wolf_set)
 
 
 def step_world(pp_world, _t):
@@ -674,6 +708,9 @@ def run_episode(pp_world: PredatorPreyWorld):
         "sheep_xs": render_data.content["sheep_xs"],
         "sheep_ys": render_data.content["sheep_ys"],
         "sheep_angles": render_data.content["sheep_angles"],
+        "wolf_xs": render_data.content["wolf_xs"],
+        "wolf_ys": render_data.content["wolf_ys"],
+        "wolf_angles": render_data.content["wolf_angles"],
         "grass_xs": pp_world.grass_set.agents.state.content["x"].reshape(-1,),
         "grass_ys": pp_world.grass_set.agents.state.content["y"].reshape(-1,),
         "grass_energies": render_data.content["grass_energies"]
@@ -682,7 +719,7 @@ def run_episode(pp_world: PredatorPreyWorld):
 
 jit_run_episode = jax.jit(run_episode)
 
-def get_fitness(pp_worlds):
+def get_fitness(pp_worlds): # also get wolf fitness
     """
     Run episodes and calculate fitness for predator-prey worlds
     Args:
@@ -692,10 +729,13 @@ def get_fitness(pp_worlds):
         - pp_worlds: Updated worlds after running episodes
     """
     pp_worlds, render_data = jax.vmap(jit_run_episode)(pp_worlds)
-    fitness = jnp.mean(pp_worlds.sheep_set.agents.state.content["fitness"], axis=0)
-    fitness = jnp.reshape(fitness, (-1))
+    sheep_fitness = jnp.mean(pp_worlds.sheep_set.agents.state.content["fitness"], axis=0)
+    sheep_fitness = jnp.reshape(sheep_fitness, (-1))
 
-    return fitness, pp_worlds
+    wolf_fitness = jnp.mean(pp_worlds.wolf_set.agents.state.content["fitness"], axis=0)
+    wolf_fitness = jnp.reshape(wolf_fitness, (-1))
+
+    return sheep_fitness, wolf_fitness, pp_worlds
 
 jit_get_fitness = jax.jit(get_fitness)
 
@@ -708,13 +748,19 @@ def main():
 
     key, subkey = random.split(key)
 
-    mean_fitness_list = []
-    saved_fitness_list = []
+    mean_sheep_fitness_list = []
+    saved_sheep_fitness_list = []
+
+    mean_wolf_fitness_list = []
+    saved_wolf_fitness_list = []
 
     # for plotting:
     sheep_xs_list = []
     sheep_ys_list = []
     sheep_angles_list = []
+    wolf_xs_list = []
+    wolf_ys_list = []
+    wolf_angles_list = []
     grass_xs_list = []
     grass_ys_list = []
     grass_energies_list = []
@@ -724,52 +770,78 @@ def main():
     print(f"Starting simulation with {NUM_WORLDS} worlds, {NUM_GENERATIONS} generations")
 
     for generation in range(NUM_GENERATIONS):
-        fitness, pp_worlds = jit_get_fitness(pp_worlds)
+        sheep_fitness, wolf_fitness, pp_worlds = jit_get_fitness(pp_worlds) # get wolf_fitness
 
-        mean_fitness = jnp.mean(fitness)
-        best_fitness = jnp.max(fitness)
-        worst_fitness = jnp.min(fitness)
-        mean_fitness_list.append(mean_fitness)
+        mean_sheep_fitness = jnp.mean(sheep_fitness)
+        best_sheep_fitness = jnp.max(sheep_fitness)
+        worst_sheep_fitness = jnp.min(sheep_fitness)
+        mean_sheep_fitness_list.append(mean_sheep_fitness)
 
-        if mean_fitness > fitness_thresh_save:
+        mean_wolf_fitness = jnp.mean(wolf_fitness)
+        best_wolf_fitness = jnp.max(wolf_fitness)
+        worst_wolf_fitness = jnp.min(wolf_fitness)
+        mean_wolf_fitness_list.append(mean_wolf_fitness)
+
+        if mean_sheep_fitness > fitness_thresh_save: # is this okay?
             fitness_thresh_save += FITNESS_THRESH_SAVE_STEP
-            saved_fitness_list.append(mean_fitness)
+            saved_sheep_fitness_list.append(mean_sheep_fitness)
+            saved_wolf_fitness_list.append(mean_wolf_fitness)
 ###
-        _, render_data_all = jax.vmap(jit_run_episode)(pp_worlds) # is this accessed correctly? how to get correct shape?
+        _, render_data_all = jax.vmap(jit_run_episode)(pp_worlds)
 
-
-
-        # extract sheep/grass data from all worlds at once
+        # extract sheep/grass data from all worlds at once # add wolf data!
         sheep_xs_list.append(render_data_all.content["sheep_xs"])
         sheep_ys_list.append(render_data_all.content["sheep_ys"])
         sheep_angles_list.append(render_data_all.content["sheep_angles"])
+
+        wolf_xs_list.append(render_data_all.content["wolf_xs"])
+        wolf_ys_list.append(render_data_all.content["wolf_ys"])
+        wolf_angles_list.append(render_data_all.content["wolf_angles"])
+
         grass_xs_list.append(render_data_all.content["grass_xs"])
         grass_ys_list.append(render_data_all.content["grass_ys"])
         grass_energies_list.append(render_data_all.content["grass_energies"])
 ###
+        print(f'Generation: {generation}, '
+              f'Sheep - Mean: {mean_sheep_fitness:.2f}, Best: {best_sheep_fitness:.2f}, Worst: {worst_sheep_fitness:.2f}, '
+              f'Wolf - Mean: {mean_wolf_fitness:.2f}, Best: {best_wolf_fitness:.2f}, Worst: {worst_wolf_fitness:.2f}')
 
-        print('Generation:', generation, 'Mean Fitness:', mean_fitness, 'Best Fitness:', best_fitness, 'Worst Fitness:', worst_fitness)
 
-    # exceed threshold -> save
     # save data
-    mean_fitness_array = jnp.array(mean_fitness_list)
-    saved_fitness_array = jnp.array(saved_fitness_list)
+    mean_sheep_fitness_array = jnp.array(mean_sheep_fitness_list)
+    mean_wolf_fitness_array = jnp.array(mean_wolf_fitness_list)
+    saved_sheep_fitness_array = jnp.array(saved_sheep_fitness_list)
+    saved_wolf_fitness_array = jnp.array(saved_wolf_fitness_list)
 
     sheep_xs_array = jnp.array(sheep_xs_list)
     sheep_ys_array = jnp.array(sheep_ys_list)
     sheep_angles_array = jnp.array(sheep_angles_list)
+    wolf_xs_array = jnp.array(wolf_xs_list)
+    wolf_ys_array = jnp.array(wolf_ys_list)
+    wolf_angles_array = jnp.array(wolf_angles_list)
     grass_xs_array = jnp.array(grass_xs_list)
     grass_ys_array = jnp.array(grass_ys_list)
     grass_energies_array = jnp.array(grass_energies_list)
 
     os.makedirs(DATA_PATH, exist_ok=True)
-    jnp.save(DATA_PATH + 'mean_fitness_list.npy', mean_fitness_array)
-    jnp.save(DATA_PATH + 'saved_fitness_list.npy', saved_fitness_array)
+
+    jnp.save(DATA_PATH + 'mean_sheep_fitness_list.npy', mean_sheep_fitness_array)
+    jnp.save(DATA_PATH + 'mean_wolf_fitness_list.npy', mean_wolf_fitness_array)
+    jnp.save(DATA_PATH + 'saved_sheep_fitness_list.npy', saved_sheep_fitness_array)
+    jnp.save(DATA_PATH + 'saved_wolf_fitness_list.npy', saved_wolf_fitness_array)
     jnp.save(DATA_PATH + 'final_key.npy', jnp.array(key))
 
+    # save sheep rendering data
     jnp.save(DATA_PATH + 'rendering_sheep_xs.npy', sheep_xs_array)
     jnp.save(DATA_PATH + 'rendering_sheep_ys.npy', sheep_ys_array)
     jnp.save(DATA_PATH + 'rendering_sheep_angs.npy', sheep_angles_array)
+
+    # save wolf rendering data
+    jnp.save(DATA_PATH + 'rendering_wolf_xs.npy', wolf_xs_array)
+    jnp.save(DATA_PATH + 'rendering_wolf_ys.npy', wolf_ys_array)
+    jnp.save(DATA_PATH + 'rendering_wolf_angs.npy', wolf_angles_array)
+
+    # save grass rendering data
     jnp.save(DATA_PATH + 'rendering_grass_xs.npy', grass_xs_array)
     jnp.save(DATA_PATH + 'rendering_grass_ys.npy', grass_ys_array)
     jnp.save(DATA_PATH + 'rendering_grass_energies.npy', grass_energies_array)

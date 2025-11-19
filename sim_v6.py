@@ -267,8 +267,8 @@ class Sheep(Agent):
             angular_action = jax.random.uniform(subkeys[1], (), minval=-1.0, maxval=1.0)
 
             # fixed base speed (with noise)
-            speed = (LINEAR_ACTION_OFFSET + LINEAR_ACTION_SCALE * forward_action) * (
-                        1 + NOISE_SCALE * jax.random.normal(subkeys[2], ()))
+            speed = ((LINEAR_ACTION_OFFSET + LINEAR_ACTION_SCALE * forward_action) *
+                     (1 + NOISE_SCALE * jax.random.normal(subkeys[2], ())))
             ang_speed = angular_action * (1 + NOISE_SCALE * jax.random.normal(subkeys[3], ()))
 
             # updated positions

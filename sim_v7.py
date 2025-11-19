@@ -11,6 +11,8 @@ Characteristics:
 - No Energy/Mass/Speed trade-offs: fixed speed, fixed metabolic cost
 - No reproduction and death dynamics
 - Storing separate files for render data
+
+
 - Updated agent movement; movement scales proportionally with body size
 - Updated habitat; changed to wraparound
 
@@ -25,8 +27,8 @@ import jax
 from flax import struct
 #from evosax import CMA_ES
 
-MAX_WORLD_X = 10000.0
-MAX_WORLD_Y = 10000.0
+WORLD_SIZE_X = 10000.0
+WORLD_SIZE_Y = 10000.0
 
 MAX_SPAWN_X = 500.0
 MAX_SPAWN_Y = 500.0
@@ -65,18 +67,19 @@ ENERGY_STORED_MAX = 5.0
 GROWTH_RATE = 0.1
 EAT_RATE = 0.3
 
-# Action parameters (sheep)
+
 ACTION_SCALE = 1.0
 LINEAR_ACTION_OFFSET = 0.0
 
+# Action parameters sheep
 SHEEP_SPEED_MULTIPLIER = 2.0
 SHEEP_LINEAR_ACTION_SCALE = SHEEP_SPEED_MULTIPLIER * SHEEP_RADIUS / Dt
-SHEEP_ANGULAR_SPEED_SCALE = 5.0  # sheep are more agile?
+SHEEP_ANGULAR_SPEED_SCALE = 5.0
 
-# Action parameters (wolves)
+# Action parameters wolves
 WOLF_SPEED_MULTIPLIER = 2.5
 WOLF_LINEAR_ACTION_SCALE = WOLF_SPEED_MULTIPLIER * WOLF_RADIUS / Dt
-WOLF_ANGULAR_SPEED_SCALE = 4.5
+WOLF_ANGULAR_SPEED_SCALE = 5.0
 
 
 # Training parameters

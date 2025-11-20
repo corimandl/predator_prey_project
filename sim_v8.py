@@ -12,7 +12,7 @@ Characteristics:
 - No reproduction and death dynamics
 - Storing separate files for render data
 
-- Increased world size (but spawn area remains same)
+- Increased world size (but spawn area remains same); agents don't reach the bounds as easily
 
 """
 import os
@@ -76,13 +76,12 @@ SHEEP_ANGULAR_SPEED_SCALE = 5.0  # sheep are more agile?
 # Action parameters (wolves)
 WOLF_SPEED_MULTIPLIER = 2.5
 WOLF_LINEAR_ACTION_SCALE = WOLF_SPEED_MULTIPLIER * WOLF_RADIUS / Dt
-WOLF_ANGULAR_SPEED_SCALE = 4.5
+WOLF_ANGULAR_SPEED_SCALE = 5
 
 
 # Training parameters
 NUM_WORLDS = 10
 NUM_GENERATIONS = 10
-POPULATION_SIZE = NUM_SHEEP
 EP_LEN = 500
 
 FITNESS_THRESH_SAVE = 150.0 # threshold for saving render data

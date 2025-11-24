@@ -60,7 +60,7 @@ BASIC_METABOLIC_COST_SHEEP = 0.02
 BASIC_METABOLIC_COST_WOLF = 0.04
 
 # Energy circle parameters (replaces grass)
-ENERGY_CIRCLE_RADIUS = 5000.0  # energy available within this radius from center
+ENERGY_CIRCLE_RADIUS = 300.0  # energy available within this radius from center
 BASE_ENERGY_RATE = 0.5  # base energy gain per timestep
 K_NEIGHBORS = 5  # number of nearest neighbors to check
 OPTIMAL_KNN_DISTANCE = 50.0  # ideal spacing between sheep
@@ -409,24 +409,24 @@ def calculate_sheep_energy_intake(sheep: Sheep):
     pairwise_distances = jnp.linalg.norm(diff, axis=2)  # shape: (num_sheep, num_sheep)
 
     # 3. for each sheep, find K nearest neighbors
-    self_mask = jnp.eye(num_sheep, dtype=bool) # exclude comparing sheep with itself
+    self_mask = jnp.eye(num_sheep, dtype=bool) # exclude comparing sheep with itself (identity matrix with diagonal True)
     inactive_mask = ~active_mask[None, :] | ~active_mask[:, None]  # compare all sheep pairs and mark any pair where at least one sheep is inactive
     exclude_mask = self_mask | inactive_mask # pairs that are excluded
 
-    pairwise_distances = jnp.where(exclude_mask, jnp.inf, pairwise_distances) # set self-distance and inactive sheep to inf to exclude them
+    pairwise_distances = jnp.where(exclude_mask, jnp.inf, pairwise_distances) # set self-distance and inactive sheep to inf to exclude them (if exclude_mask = True)
 
     # get K nearest neighbors
-    knn_distances = jnp.sort(pairwise_distances, axis=1)[:, :K_NEIGHBORS]
+    knn_distances = jnp.sort(pairwise_distances, axis=1)[:, :K_NEIGHBORS] # how many K_NEIGHBORS do we pick?
 
     # 4. calculate mean K-NN distance for each sheep
-    valid_distances = jnp.where(jnp.isfinite(knn_distances), knn_distances, 0.0)
-    num_valid_neighbors = jnp.sum(jnp.isfinite(knn_distances), axis=1)
+    valid_distances = jnp.where(jnp.isfinite(knn_distances), knn_distances, 0.0) # keep distance if finite, else set 0
+    num_valid_neighbors = jnp.sum(jnp.isfinite(knn_distances), axis=1) # count True value per sheep
     mean_knn_distance = jnp.sum(valid_distances, axis=1) / jnp.maximum(num_valid_neighbors, 1.0) # handle case where there are fewer than K neighbors (use mean of available neighbors)
 
     # 5. energy penalty based on how far from optimal spacing
     # closer than optimal => crowded => penalty
     spacing_penalty = jnp.maximum(0.0, OPTIMAL_KNN_DISTANCE - mean_knn_distance)
-    energy_multiplier = jnp.maximum(0.1, 1.0 - KNN_PENALTY_SCALE * spacing_penalty)
+    energy_multiplier = jnp.maximum(0.1, 1.0 - KNN_PENALTY_SCALE * spacing_penalty) # 0.1 so sheep don't starve instantly from crowding
 
     # 6. final energy = base rate * spacing multiplier * zone check * active check
     energy_intake = BASE_ENERGY_RATE * energy_multiplier * in_energy_zone * active_mask.astype(jnp.float32)

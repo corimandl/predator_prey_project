@@ -46,7 +46,7 @@ SHEEP_AGENT_TYPE = 1
 EAT_RATE_SHEEP = 0.4
 
 # Wolf parameters
-NUM_WOLF = 100
+NUM_WOLF = 1
 WOLF_RADIUS = 7.0
 WOLF_ENERGY_BEGIN_MAX = 50.0
 WOLF_MASS_BEGIN = 7.0
@@ -84,7 +84,7 @@ FITNESS_THRESH_SAVE = 150.0 # threshold for saving render data
 FITNESS_THRESH_SAVE_STEP = 10.0 # the amount by which we increase the threshold for saving render data
 
 # save data
-DATA_PATH = "./data/sheep_wolf_data1/"
+DATA_PATH = "./data/sheep_wolf_data2/"
 
 
 # Predator-prey world parameters
@@ -411,16 +411,12 @@ def calculate_sheep_energy_intake(sheep: Sheep):
         in_axes=(0, None)
     )(sheep, sheep)
 
-    energy_share = BASE_ENERGY_RATE * jnp.maximum(num_sheep_in_radius, 1.0)
+    energy_share = jnp.divide(BASE_ENERGY_RATE, jnp.maximum(num_sheep_in_radius, 1.0))
     energy_intake = energy_share * active_mask
 
     return energy_intake
 
 jit_calculate_sheep_energy_intake = jax.jit(calculate_sheep_energy_intake)
-
-
-
-
 
 def wolves_sheep_interactions(sheep: Sheep, wolves: Wolf):
     def wolf_sheep_interaction(one_wolf, sheep):
@@ -669,10 +665,10 @@ def main():
         worst_wolf_fitness = jnp.min(wolf_fitness)
         mean_wolf_fitness_list.append(mean_wolf_fitness)
 
-        if mean_sheep_fitness > fitness_thresh_save:
-            fitness_thresh_save += FITNESS_THRESH_SAVE_STEP
-            saved_sheep_fitness_list.append(mean_sheep_fitness)
-            saved_wolf_fitness_list.append(mean_wolf_fitness)
+        #if mean_sheep_fitness > fitness_thresh_save:
+        #fitness_thresh_save += FITNESS_THRESH_SAVE_STEP
+        saved_sheep_fitness_list.append(mean_sheep_fitness)
+        saved_wolf_fitness_list.append(mean_wolf_fitness)
 
         _, render_data_all = jax.vmap(jit_run_episode)(pp_worlds)
 

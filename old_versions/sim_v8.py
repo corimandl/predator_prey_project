@@ -844,17 +844,17 @@ def main():
     jnp.save(DATA_PATH + 'saved_wolf_fitness_list.npy', saved_wolf_fitness_array)
     jnp.save(DATA_PATH + 'final_key.npy', jnp.array(key))
 
-    # save sheep rendering data
+    # save sheep rendering-plotting data
     jnp.save(DATA_PATH + 'rendering_sheep_xs.npy', sheep_xs_array)
     jnp.save(DATA_PATH + 'rendering_sheep_ys.npy', sheep_ys_array)
     jnp.save(DATA_PATH + 'rendering_sheep_angs.npy', sheep_angles_array)
 
-    # save wolf rendering data
+    # save wolf rendering-plotting data
     jnp.save(DATA_PATH + 'rendering_wolf_xs.npy', wolf_xs_array)
     jnp.save(DATA_PATH + 'rendering_wolf_ys.npy', wolf_ys_array)
     jnp.save(DATA_PATH + 'rendering_wolf_angs.npy', wolf_angles_array)
 
-    # save grass rendering data
+    # save grass rendering-plotting data
     jnp.save(DATA_PATH + 'rendering_grass_xs.npy', grass_xs_array)
     jnp.save(DATA_PATH + 'rendering_grass_ys.npy', grass_ys_array)
     jnp.save(DATA_PATH + 'rendering_grass_energies.npy', grass_energies_array)

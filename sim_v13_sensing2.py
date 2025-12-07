@@ -21,7 +21,8 @@ Characteristics:
 """
 import os
 
-from reference_code.train_v7 import RAY_RESOLUTION
+from evosax.algorithms import CMA_ES
+
 from structs import *
 from functions import *
 
@@ -29,9 +30,8 @@ import jax.numpy as jnp
 import jax.random as random
 import jax
 from flax import struct
-
 from sensor import jit_get_all_agent_sensors
-from evosax import CMA_ES
+
 
 WORLD_SIZE_X = 400.0
 WORLD_SIZE_Y = 400.0
@@ -99,12 +99,14 @@ NUM_ES_PARAMS = NUM_NEURONS * (NUM_NEURONS + NUM_OBS + NUM_ACTIONS + 2) # total 
 NUM_WORLDS = 5
 NUM_GENERATIONS = 5
 EP_LEN = 3000
+ELITE_RATIO = 0.3
+SIGMA_INIT = 0.1
 
 #FITNESS_THRESH_SAVE = 150.0 # threshold for saving render data
 #FITNESS_THRESH_SAVE_STEP = 10.0 # the amount by which we increase the threshold for saving render data
 
 # save data
-DATA_PATH = "./data/sheep_wolf_data3/"
+DATA_PATH = "./data/sheep_wolf_data4/"
 
 
 # Predator-prey world parameters
@@ -115,7 +117,7 @@ PP_WORLD_PARAMS = Params(content= {"sheep_params": {"x_max": MAX_SPAWN_X,
                                                     "eat_rate": EAT_RATE_SHEEP,
                                                     "radius": SHEEP_RADIUS,
                                                     "agent_type": SHEEP_AGENT_TYPE,
-                                                    "num_sheep": NUM_SHEEP,
+                                                    "num_sheep": NUM_SHEEP
                                                     },
                                    "wolf_params": {"x_max": MAX_SPAWN_X,
                                                    "y_max": MAX_SPAWN_Y,
@@ -123,13 +125,18 @@ PP_WORLD_PARAMS = Params(content= {"sheep_params": {"x_max": MAX_SPAWN_X,
                                                    "mass_begin": WOLF_MASS_BEGIN,
                                                    "radius": WOLF_RADIUS,
                                                    "agent_type": WOLF_AGENT_TYPE,
-                                                   "num_wolf": NUM_WOLF,
+                                                   "num_wolf": NUM_WOLF
                                                    },
-                                   "policy_params": {"num_neurons": NUM_NEURONS,
+                                   "policy_params_sheep": {"num_neurons": NUM_NEURONS,
                                                      "num_obs": NUM_OBS,
                                                      "num_actions": NUM_ACTIONS,
-                                                     "init_param_span": INIT_PARAM_SPAN}
-                                   })
+                                                     "init_param_span": INIT_PARAM_SPAN
+                                                    },
+                                   "policy_params_wolf": {"num_neurons": NUM_NEURONS,
+                                                     "num_obs": NUM_OBS,
+                                                     "num_actions": NUM_ACTIONS,
+                                                     "init_param_span": INIT_PARAM_SPAN
+                                                    }})
 
 
 # Sheep dataclass
@@ -137,7 +144,8 @@ PP_WORLD_PARAMS = Params(content= {"sheep_params": {"x_max": MAX_SPAWN_X,
 class Sheep(Agent):
     @staticmethod
     def create_agent(type, params, id, active_state, key):
-        # to do: add policy
+        policy = params.content["policy"]
+
         key, *subkeys = random.split(key, 5)
 
         x_max = params.content["x_max"]
@@ -174,7 +182,7 @@ class Sheep(Agent):
         agent_state = jax.lax.cond(active_state, lambda _: create_active_agent(),
                                    lambda _: create_inactive_agent(), None)
 
-        return Sheep(id=id, state=agent_state, params=params, active_state=active_state, agent_type=type, age=0.0, key=key,policy=None)
+        return Sheep(id=id, state=agent_state, params=params, active_state=active_state, agent_type=type, age=0.0, key=key,policy=policy)
 
     @staticmethod
     def step_agent(agent, input, step_params):
@@ -200,6 +208,7 @@ class Sheep(Agent):
             obs = Signal(content=obs_content)
 
             # add: new policy - use obs in new policy
+            new_policy = CTRNN.step_policy(agent.policy, obs, step_params)
 
             dt = step_params.content["dt"]
             damping = step_params.content["damping"]
@@ -208,16 +217,16 @@ class Sheep(Agent):
 
             #eat_rate = agent.params.content["eat_rate"]
 
-            key, *subkeys = random.split(agent.key, 5)
+            action = new_policy.state.content["action"]
+            forward_action = action[0]  # sigmoid (0 to 1)
+            angular_action = action[1]  # tanh (-1 to 1)
 
-            # sample random movement
-            forward_action = jax.random.uniform(subkeys[0], (), minval=0.0, maxval=1.0)
-            angular_action = jax.random.uniform(subkeys[1], (), minval=-1.0, maxval=1.0)
+            key, *noise_keys = random.split(agent.key, 3)
 
             # fixed base speed (with noise)
             speed = ((LINEAR_ACTION_OFFSET + SHEEP_LINEAR_ACTION_SCALE * forward_action) *
-                     (1 + NOISE_SCALE * jax.random.normal(subkeys[2], ())))
-            ang_speed = SHEEP_ANGULAR_SPEED_SCALE * angular_action * (1 + NOISE_SCALE * jax.random.normal(subkeys[3], ()))
+                     (1 + NOISE_SCALE * jax.random.normal(noise_keys[0], ())))
+            ang_speed = SHEEP_ANGULAR_SPEED_SCALE * angular_action * (1 + NOISE_SCALE * jax.random.normal(noise_keys[1], ()))
 
             # updated positions
             #x_new = jnp.clip(x + dt * x_dot, -x_max_arena, x_max_arena)  # no wrap-around for now; may change it later
@@ -245,7 +254,7 @@ class Sheep(Agent):
             return jax.lax.cond(
                 agent_is_dead,
                 lambda _: agent.replace(state=new_state, active_state=0),  # mark as dead/inactive
-                lambda _: agent.replace(state=new_state, key=key, age=agent.age + dt), # add new policy
+                lambda _: agent.replace(state=new_state, key=key, age=agent.age + dt, policy=new_policy), # add new policy
                 None
             )
         def step_inactive_agent():
@@ -281,14 +290,15 @@ class Sheep(Agent):
 class Wolf(Agent):
     @staticmethod
     def create_agent(type, params, id, active_state, key):
-        # add policy
+        policy = params.content["policy"]
+        key, *subkeys = random.split(key, 5)
+
         x_max = params.content["x_max"]
         y_max = params.content["y_max"]
         energy_begin_max = params.content["energy_begin_max"]
         radius = params.content["radius"]
         mass_begin = params.content["mass_begin"]
 
-        key, *subkeys = random.split(key, 5)
         params_content = {"radius": radius, "x_max": x_max, "y_max": y_max, "energy_begin_max": energy_begin_max, "mass": mass_begin}
         params = Params(content=params_content)
 
@@ -316,7 +326,7 @@ class Wolf(Agent):
 
         agent_state = jax.lax.cond(active_state, lambda _: create_active_agent(),
                                    lambda _: create_inactive_agent(), None)
-        return Wolf(id=id, state=agent_state, params=params, active_state=active_state, agent_type=type, age=0.0, key=key,policy=None)
+        return Wolf(id=id, state=agent_state, params=params, active_state=active_state, agent_type=type, age=0.0, key=key,policy=policy)
 
     @staticmethod
     def step_agent(agent, input, step_params):
@@ -335,27 +345,26 @@ class Wolf(Agent):
             obs_content = {'obs': jnp.concatenate((obs_rays,
                                                    energy,
                                                    jnp.array([energy_intake]).reshape(1),
-                                                   x_dot, y_dot, ang_dot
-                                                   ), axis=0)}
+                                                   x_dot, y_dot, ang_dot), axis=0)}
             obs = Signal(content=obs_content)
 
-            # add: new policy - use obs in new policy
+            new_policy = CTRNN.step_policy(agent.policy, obs, step_params)
 
             dt = step_params.content["dt"]
             damping = step_params.content["damping"]
             x_max_arena = step_params.content["x_max_arena"]
             y_max_arena = step_params.content["y_max_arena"]
 
-            key, *subkeys = random.split(agent.key, 5)
+            action = new_policy.state.content["action"]
+            forward_action = action[0]  # sigmoid (0 to 1)
+            angular_action = action[1]  # tanh (-1 to 1)
 
-            # sample random movement
-            forward_action = jax.random.uniform(subkeys[0], (), minval=0.0, maxval=1.0)
-            angular_action = jax.random.uniform(subkeys[1], (), minval=-1.0, maxval=1.0)
+            key, *noise_keys = random.split(agent.key, 3)
 
             # fixed base speed (with noise)
             speed = (LINEAR_ACTION_OFFSET + WOLF_LINEAR_ACTION_SCALE * forward_action) * (
-                        1 + NOISE_SCALE * jax.random.normal(subkeys[2], ()))
-            ang_speed = WOLF_ANGULAR_SPEED_SCALE * angular_action * (1 + NOISE_SCALE * jax.random.normal(subkeys[3], ()))
+                        1 + NOISE_SCALE * jax.random.normal(noise_keys[0], ()))
+            ang_speed = WOLF_ANGULAR_SPEED_SCALE * angular_action * (1 + NOISE_SCALE * jax.random.normal(noise_keys[1], ()))
 
             # updated positions
             #x_new = jnp.clip(x + dt * x_dot, -x_max_arena, x_max_arena)  # no wrap-around for now; may change it later
@@ -382,7 +391,7 @@ class Wolf(Agent):
             return jax.lax.cond(
                 agent_is_dead,
                 lambda _: agent.replace(state=new_state, active_state=0),  # mark as dead/inactive
-                lambda _: agent.replace(state=new_state, key=key, age=agent.age + dt),
+                lambda _: agent.replace(state=new_state, key=key, age=agent.age + dt, policy=new_policy),
                 None
             )
         def step_inactive_agent():
@@ -511,7 +520,7 @@ class CTRNN(Policy):
 
         J = jax.random.uniform(init_keys[0], (num_neurons, num_neurons), minval=-init_param_span, maxval=init_param_span, dtype=jnp.float32)
         E = jax.random.uniform(init_keys[1], (num_neurons, num_obs), minval=-init_param_span, maxval=init_param_span, dtype=jnp.float32)
-        D = jax-random.uniform(init_keys[2], (num_actions, num_neurons), minval=-init_param_span, maxval=init_param_span, dtype=jnp.float32)
+        D = jax.random.uniform(init_keys[2], (num_actions, num_neurons), minval=-init_param_span, maxval=init_param_span, dtype=jnp.float32)
 
         tau = jax.random.uniform(init_keys[3], (num_neurons, ), minval=-init_param_span, maxval=init_param_span, dtype=jnp.float32)
         B = jax.random.uniform(init_keys[4], (num_neurons, ), minval=-init_param_span, maxval=init_param_span, dtype=jnp.float32)
@@ -560,6 +569,39 @@ class CTRNN(Policy):
         return policy.replace(params=new_policy_params)
 
 
+# potentially make this into two seperate functions:
+def set_CMAES_params(CMAES_params, agents: Agent):
+    """
+    copy the CMAES_params to the agents while manipulating the shape of the parameters
+    Args:
+        - CMAES_params: The parameters to set with shape (NUM_FORAGERS, NUM_ES_PARAMS)
+        - agents: The agents to set the parameters to
+
+    Returns:
+        The updated agents
+    """
+    J = CMAES_params[:,:NUM_NEURONS*NUM_NEURONS].reshape((-1, NUM_NEURONS, NUM_NEURONS))
+    last_index = NUM_NEURONS*NUM_NEURONS
+
+    tau = CMAES_params[:, last_index:last_index + NUM_NEURONS].reshape((-1, NUM_NEURONS))
+    last_index += NUM_NEURONS
+
+    E = CMAES_params[:, last_index:last_index + NUM_NEURONS * NUM_OBS].reshape((-1, NUM_NEURONS, NUM_OBS))
+    last_index += NUM_NEURONS*NUM_OBS
+
+    B = CMAES_params[:, last_index:last_index + NUM_NEURONS].reshape((-1, NUM_NEURONS))
+    last_index += NUM_NEURONS
+
+    D = CMAES_params[:, last_index:last_index + NUM_NEURONS * NUM_ACTIONS].reshape((-1, NUM_ACTIONS, NUM_NEURONS))
+
+    policy_params = Params(content={'J': J, 'tau': tau, 'E': E, 'B': B, 'D': D})
+    new_policies = jax.vmap(CTRNN.set_policy)(agents.policy, policy_params)
+    return agents.replace(policy=new_policies)
+
+jit_set_CMAES_params = jax.jit(set_CMAES_params)
+
+
+
 
 @struct.dataclass
 class PredatorPreyWorld:
@@ -570,8 +612,30 @@ class PredatorPreyWorld:
     def create_world(params, key):
         sheep_params = params.content["sheep_params"]
         wolf_params = params.content["wolf_params"]
+        policy_params_sheep = params.content["policy_params_sheep"]
+        policy_params_wolf = params.content["policy_params_wolf"]
 
         num_sheep = sheep_params["num_sheep"]
+        num_wolf = wolf_params["num_wolf"]
+
+        key, *policy_keys = jax.random.split(key, num_sheep + 1)
+        policy_keys = jnp.array(policy_keys)
+
+        policy_create_params_sheep = Params(content={'num_neurons': policy_params_sheep['num_neurons'],
+                                               'num_obs': policy_params_sheep['num_obs'],
+                                               'num_actions': policy_params_sheep['num_actions'],
+                                               'init_param_span': policy_params_sheep['init_param_span']})
+        policies_sheep = jax.vmap(CTRNN.create_policy, in_axes=(None, 0))(policy_create_params_sheep, policy_keys)
+
+        key, *policy_keys = jax.random.split(key, num_wolf + 1)
+        policy_keys = jnp.array(policy_keys)
+        policy_create_params_wolf = Params(content={'num_neurons': policy_params_wolf['num_neurons'],
+                                               'num_obs': policy_params_wolf['num_obs'],
+                                               'num_actions': policy_params_wolf['num_actions'],
+                                               'init_param_span': policy_params_wolf['init_param_span']})
+
+        policies_wolf = jax.vmap(CTRNN.create_policy, in_axes=(None, 0))(policy_create_params_wolf, policy_keys)
+
         key, sheep_key = random.split(key, 2)
 
         x_max_array = jnp.tile(jnp.array([sheep_params["x_max"]]), (num_sheep,))
@@ -587,7 +651,8 @@ class PredatorPreyWorld:
             "energy_begin_max": energy_begin_max_array,
             "eat_rate": eat_rate_array,
             "radius": radius_array,
-            "mass_begin": mass_array
+            "mass_begin": mass_array,
+            "policy": policies_sheep
         })
 
         sheep = create_agents(agent=Sheep, params=sheep_create_params, num_agents=num_sheep, num_active_agents=num_sheep,
@@ -596,8 +661,6 @@ class PredatorPreyWorld:
         sheep_set = Set(num_agents=num_sheep, num_active_agents=num_sheep, agents=sheep, id=0, set_type=sheep_params["agent_type"],
                         params=None, state=None, policy=None, key=None)
 
-
-        num_wolf = wolf_params["num_wolf"]
         key, wolf_key = random.split(key, 2)
         x_max_array = jnp.tile(jnp.array([wolf_params["x_max"]]), (num_wolf,))
         y_max_array = jnp.tile(jnp.array([wolf_params["y_max"]]), (num_wolf,))
@@ -609,7 +672,8 @@ class PredatorPreyWorld:
                                               "y_max": y_max_array,
                                               "energy_begin_max": energy_begin_max_array,
                                               "radius": radius_array,
-                                              "mass_begin": mass_array
+                                              "mass_begin": mass_array,
+                                              "policy": policies_wolf
         })
 
         wolves = create_agents(agent=Wolf, params=wolf_create_params, num_agents=num_wolf, num_active_agents=num_wolf,
@@ -622,16 +686,12 @@ class PredatorPreyWorld:
         return PredatorPreyWorld(sheep_set=sheep_set, wolf_set=wolf_set)
 
 
-def step_world(pp_world, _t):
-    sheep_set = pp_world.sheep_set
-    wolf_set = pp_world.wolf_set
+def step_world(pred_prey_world, _t):
+    sheep_set = pred_prey_world.sheep_set
+    wolf_set = pred_prey_world.wolf_set
 
-    ray_resolution_int = int(RAY_RESOLUTION)
     sheep_sensor_data, wolf_sensor_data = jit_get_all_agent_sensors(
-        sheep_set.agents, wolf_set.agents,
-        RAY_SPAN, SHEEP_RAY_MAX_LENGTH, WOLF_RAY_MAX_LENGTH,
-        ray_resolution_int, SHEEP_AGENT_TYPE, WOLF_AGENT_TYPE
-    )
+        sheep_set.agents, wolf_set.agents, SHEEP_AGENT_TYPE, WOLF_AGENT_TYPE)
 
     energy_intake_from_environment = jit_calculate_sheep_energy_intake(sheep_set.agents)
     energy_loss_sheep, energy_intake_wolves = jit_wolves_sheep_interactions(sheep_set.agents, wolf_set.agents)
@@ -643,6 +703,8 @@ def step_world(pp_world, _t):
                                         "metabolic_cost_angular": METABOLIC_COST_ANGULAR,
                                         "x_max_arena": WORLD_SIZE_X,
                                         "y_max_arena": WORLD_SIZE_Y,
+                                        "action_scale": ACTION_SCALE,
+                                        "time_constant_scale": TIME_CONSTANT_SCALE
     })
     sheep_set = jit_step_agents(Sheep.step_agent, sheep_step_params, sheep_step_input, sheep_set)
 
@@ -654,6 +716,8 @@ def step_world(pp_world, _t):
                                        "metabolic_cost_angular": METABOLIC_COST_ANGULAR,
                                        "x_max_arena": WORLD_SIZE_X,
                                        "y_max_arena": WORLD_SIZE_Y,
+                                       "action_scale": ACTION_SCALE,
+                                       "time_constant_scale": TIME_CONSTANT_SCALE
     })
     wolf_set = jit_step_agents(Wolf.step_agent, wolf_step_params, wolf_step_input, wolf_set)
 
@@ -668,35 +732,35 @@ def step_world(pp_world, _t):
                                   "wolf_energy": wolf_set.agents.state.content["energy"].reshape(-1, 1)
     })
 
-    return pp_world.replace(sheep_set=sheep_set, wolf_set=wolf_set), render_data
+    return pred_prey_world.replace(sheep_set=sheep_set, wolf_set=wolf_set), render_data
 
 jit_step_world = jax.jit(step_world)
 
 
-def reset_world(pp_world):
-    sheep_set_agents = pp_world.sheep_set.agents
-    wolf_set_agents = pp_world.wolf_set.agents
+def reset_world(pred_prey_world):
+    sheep_set_agents = pred_prey_world.sheep_set.agents
+    wolf_set_agents = pred_prey_world.wolf_set.agents
 
     sheep_set_agents = jax.vmap(Sheep.reset_agent)(sheep_set_agents, None)
     wolf_set_agents = jax.vmap(Wolf.reset_agent)(wolf_set_agents, None)
 
-    sheep_set = pp_world.sheep_set.replace(agents=sheep_set_agents)
-    wolf_set = pp_world.wolf_set.replace(agents=wolf_set_agents)
+    sheep_set = pred_prey_world.sheep_set.replace(agents=sheep_set_agents)
+    wolf_set = pred_prey_world.wolf_set.replace(agents=wolf_set_agents)
 
-    return pp_world.replace(sheep_set=sheep_set, wolf_set=wolf_set)
+    return pred_prey_world.replace(sheep_set=sheep_set, wolf_set=wolf_set)
 
 jit_reset_world = jax.jit(reset_world)
 
 
-def scan_episode(pp_world: PredatorPreyWorld, ts):
-    return jax.lax.scan(jit_step_world, pp_world, ts)
+def scan_episode(pred_prey_world: PredatorPreyWorld, ts):
+    return jax.lax.scan(jit_step_world, pred_prey_world, ts)
 
 jit_scan_episode = jax.jit(scan_episode)
 
-def run_episode(pp_world: PredatorPreyWorld):
+def run_episode(pred_prey_world: PredatorPreyWorld):
     ts = jnp.arange(EP_LEN)
-    pp_world = jit_reset_world(pp_world)
-    pp_world, render_data = jit_scan_episode(pp_world, ts)
+    pred_prey_world = jit_reset_world(pred_prey_world)
+    pred_prey_world, render_data = jit_scan_episode(pred_prey_world, ts)
     render_data = Signal(content={
         "sheep_xs": render_data.content["sheep_xs"],
         "sheep_ys": render_data.content["sheep_ys"],
@@ -707,50 +771,79 @@ def run_episode(pp_world: PredatorPreyWorld):
         "wolf_angles": render_data.content["wolf_angles"],
         "wolf_energy": render_data.content["wolf_energy"] ##
     })
-    return pp_world, render_data
+    return pred_prey_world, render_data
 
 jit_run_episode = jax.jit(run_episode)
 
-def get_energy(pp_worlds):
+def get_energy(CMAES_params_sheep, CMAES_params_wolf, pred_prey_worlds):
     """
     Run episodes and calculate energy for predator-prey worlds
     Args:
-        - pp_worlds: Array of PredatorPreyWorld instances
+        - CMAES_params (sheep and wolf): Parameter set from CMA-ES with shape (NUM_ES_PARAMS,)
+        - pred_prey_worlds: Array of PredatorPreyWorld instances
     Returns:
-        - energy: Mean energy across all sheep in all worlds
-        - pp_worlds: Updated worlds after running episodes
+        - sheep_energy: Mean energy of sheep across all worlds (scalar)
+        - wolf_energy: Mean energy of wolves across all worlds (scalar)
+        - pred_prey_worlds: Updated worlds after running episodes
     """
-    pp_worlds, render_data = jax.vmap(jit_run_episode)(pp_worlds)
-    sheep_energy = jnp.mean(pp_worlds.sheep_set.agents.state.content["energy"], axis=0)
-    sheep_energy = jnp.reshape(sheep_energy, (-1))
+    # apply same parameters to all sheep across all worlds
+    cmaes_sheep = jax.vmap(jit_set_CMAES_params, in_axes=(None, 0))(CMAES_params_sheep, pred_prey_worlds.sheep_set.agents)
+    cmaes_sheep_set = pred_prey_worlds.sheep_set.replace(agents=cmaes_sheep)
 
-    wolf_energy = jnp.mean(pp_worlds.wolf_set.agents.state.content["energy"], axis=0)
-    wolf_energy = jnp.reshape(wolf_energy, (-1))
+    # apply same parameters to all wolves across all worlds
+    cmaes_wolf = jax.vmap(jit_set_CMAES_params, in_axes=(None, 0))(CMAES_params_wolf, pred_prey_worlds.wolf_set.agents)
+    cmaes_wolf_set = pred_prey_worlds.wolf_set.replace(agents=cmaes_wolf)
 
-    return sheep_energy, wolf_energy, pp_worlds
+    pred_prey_worlds = pred_prey_worlds.replace(sheep_set=cmaes_sheep_set, wolf_set=cmaes_wolf_set)
+    pred_prey_worlds, render_data = jax.vmap(jit_run_episode)(pred_prey_worlds)
+
+    sheep_energy = jnp.mean(pred_prey_worlds.sheep_set.agents.state.content["energy"])
+    wolf_energy = jnp.mean(pred_prey_worlds.wolf_set.agents.state.content["energy"])
+
+    return sheep_energy, wolf_energy, pred_prey_worlds
 
 jit_get_energy = jax.jit(get_energy)
 
 
 def main():
-    key, *pp_world_keys = random.split(KEY, NUM_WORLDS+1)
-    pp_world_keys = jnp.array(pp_world_keys)
+    key, *pred_prey_world_keys = random.split(KEY, NUM_WORLDS+1)
+    pred_prey_world_keys = jnp.array(pred_prey_world_keys)
 
-    pp_worlds = jax.vmap(PredatorPreyWorld.create_world, in_axes=(None,0))(PP_WORLD_PARAMS, pp_world_keys)
+    pred_prey_worlds = jax.vmap(PredatorPreyWorld.create_world, in_axes=(None,0))(PP_WORLD_PARAMS, pred_prey_world_keys)
 
-    key, subkey = random.split(key)
+    key, sheep_key, wolf_key = random.split(key, 3)
+    dummy_solution = jnp.zeros(NUM_ES_PARAMS)
+
+    strategy_sheep = CMA_ES(population_size=NUM_SHEEP, solution=dummy_solution)
+    es_params_sheep = strategy_sheep.default_params
+    #es_params_sheep = es_params_sheep.replace(sigma_init=SIGMA_INIT)
+    state_sheep = strategy_sheep.init(key=sheep_key, mean=dummy_solution, params=es_params_sheep)
+
+    strategy_wolf = CMA_ES(population_size=NUM_WOLF, solution=dummy_solution)
+    es_params_wolf = strategy_wolf.default_params
+    #es_params_wolf = es_params_wolf.replace(sigma_init=SIGMA_INIT)
+    state_wolf = strategy_wolf.init(key=wolf_key, mean= dummy_solution, params=es_params_wolf)
 
     mean_sheep_energy_list = []
     mean_wolf_energy_list = []
 
-    # for rendering:
+    # for rendering/plotting:
     sheep_xs_list, sheep_ys_list, sheep_angles_list, sheep_energy_list = [], [], [], []
     wolf_xs_list, wolf_ys_list, wolf_angles_list, wolf_energy_list = [], [], [], []
 
-    print(f"Starting simulation with {NUM_WORLDS} worlds, {NUM_GENERATIONS} generations")
+    print(f"Starting co-evolution with {NUM_WORLDS} worlds, {NUM_GENERATIONS} generations")
+    print(f"Sheep population: {NUM_SHEEP}, Wolf population: {NUM_WOLF}")
 
     for generation in range(NUM_GENERATIONS):
-        sheep_energy, wolf_energy, pp_worlds = jit_get_energy(pp_worlds)
+        key, sheep_gen_key, wolf_gen_key = jax.random.split(key, 3)
+
+        x_sheep, state_sheep = strategy_sheep.ask(sheep_gen_key, state_sheep, es_params_sheep)
+        x_wolf, state_wolf = strategy_wolf.ask(wolf_gen_key, state_wolf, es_params_wolf)
+
+        sheep_energy, wolf_energy, pred_prey_worlds = jit_get_energy(x_sheep, x_wolf, pred_prey_worlds)
+
+        state_sheep = strategy_sheep.tell(sheep_gen_key, x_sheep, -1*sheep_energy, state_sheep, es_params_sheep)
+        state_wolf = strategy_wolf.tell(wolf_gen_key, x_wolf, -1*wolf_energy, state_wolf, es_params_wolf)
 
         mean_sheep_energy = jnp.mean(sheep_energy)
         best_sheep_energy = jnp.max(sheep_energy)
@@ -763,7 +856,7 @@ def main():
         mean_sheep_energy_list.append(mean_sheep_energy)
         mean_wolf_energy_list.append(mean_wolf_energy)
 
-        _, render_data_all = jax.vmap(jit_run_episode)(pp_worlds)
+        _, render_data_all = jax.vmap(jit_run_episode)(pred_prey_worlds)
 
         # extract sheep/grass data from all worlds at once
         sheep_xs_list.append(render_data_all.content["sheep_xs"])
@@ -801,13 +894,13 @@ def main():
     jnp.save(DATA_PATH + 'mean_wolf_energy_list.npy', mean_wolf_energy_array)
     jnp.save(DATA_PATH + 'final_key.npy', jnp.array(key))
 
-    # save sheep rendering data
+    # save sheep rendering-plotting data
     jnp.save(DATA_PATH + 'rendering_sheep_xs.npy', sheep_xs_array)
     jnp.save(DATA_PATH + 'rendering_sheep_ys.npy', sheep_ys_array)
     jnp.save(DATA_PATH + 'rendering_sheep_angs.npy', sheep_angles_array)
     jnp.save(DATA_PATH + 'rendering_sheep_energy.npy', sheep_energy_array) # plot energy against ts
 
-    # save wolf rendering data
+    # save wolf rendering-plotting data
     jnp.save(DATA_PATH + 'rendering_wolf_xs.npy', wolf_xs_array)
     jnp.save(DATA_PATH + 'rendering_wolf_ys.npy', wolf_ys_array)
     jnp.save(DATA_PATH + 'rendering_wolf_angs.npy', wolf_angles_array)

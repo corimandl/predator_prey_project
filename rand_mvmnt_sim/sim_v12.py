@@ -630,7 +630,7 @@ def main():
     mean_sheep_energy_list = []
     mean_wolf_energy_list = []
 
-    # for rendering:
+    # for rendering-plotting:
     sheep_xs_list, sheep_ys_list, sheep_angles_list, sheep_energy_list = [], [], [], []
     wolf_xs_list, wolf_ys_list, wolf_angles_list, wolf_energy_list = [], [], [], []
 
@@ -688,13 +688,13 @@ def main():
     jnp.save(DATA_PATH + 'mean_wolf_energy_list.npy', mean_wolf_energy_array)
     jnp.save(DATA_PATH + 'final_key.npy', jnp.array(key))
 
-    # save sheep rendering data
+    # save sheep rendering-plotting data
     jnp.save(DATA_PATH + 'rendering_sheep_xs.npy', sheep_xs_array)
     jnp.save(DATA_PATH + 'rendering_sheep_ys.npy', sheep_ys_array)
     jnp.save(DATA_PATH + 'rendering_sheep_angs.npy', sheep_angles_array)
     jnp.save(DATA_PATH + 'rendering_sheep_energy.npy', sheep_energy_array) # plot energy against ts
 
-    # save wolf rendering data
+    # save wolf rendering-plotting data
     jnp.save(DATA_PATH + 'rendering_wolf_xs.npy', wolf_xs_array)
     jnp.save(DATA_PATH + 'rendering_wolf_ys.npy', wolf_ys_array)
     jnp.save(DATA_PATH + 'rendering_wolf_angs.npy', wolf_angles_array)

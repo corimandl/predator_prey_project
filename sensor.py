@@ -157,26 +157,28 @@ def get_sensor_data(agent, all_sheep, all_wolves, ray_span, sheep_ray_length, wo
 jit_get_sensor_data = jax.jit(get_sensor_data)
 
 
+SHEEP_RAY_MAX_LENGTH = 120.0
+WOLF_RAY_MAX_LENGTH = 120.0
+RAY_RESOLUTION = 9  # W&B update
+RAY_SPAN = jnp.pi/3 # W&B update
 
-def get_all_agent_sensors(all_sheep, all_wolves, ray_span, sheep_ray_length, wolf_ray_length,
-                          ray_resolution, sheep_agent_type, wolf_agent_type):
+def get_all_agent_sensors(all_sheep, all_wolves, sheep_agent_type, wolf_agent_type):
     """
     Get sensor data for all agents
     Args:
         - all_sheep: All sheep agents
         - all_wolves: All wolf agents
         - sensor parameters
-        - agent types
     Returns:
         sheep_sensors: Sensor data for all sheep, shape (num_sheep, RAY_RESOLUTION * 4)
         wolf_sensors: Sensor data for all wolves, shape (num_wolves, RAY_RESOLUTION * 4)
     """
     def get_sensors_for_one_agent(agent):
         return jax.lax.cond(agent.active_state,
-            lambda _: get_sensor_data(agent, all_sheep, all_wolves, ray_span, sheep_ray_length,
-                                     wolf_ray_length, ray_resolution, sheep_agent_type,
+            lambda _: get_sensor_data(agent, all_sheep, all_wolves, RAY_SPAN, SHEEP_RAY_MAX_LENGTH,
+                                     WOLF_RAY_MAX_LENGTH, RAY_RESOLUTION, sheep_agent_type,
                                      wolf_agent_type),
-            lambda _: jnp.zeros((ray_resolution * 4,)),  # return zeros if inactive
+            lambda _: jnp.zeros((RAY_RESOLUTION * 4,)),  # return zeros if inactive
             None
         )
 
@@ -185,5 +187,5 @@ def get_all_agent_sensors(all_sheep, all_wolves, ray_span, sheep_ray_length, wol
 
     return sheep_sensors, wolf_sensors
 
-jit_get_all_agent_sensors = jax.jit(get_all_agent_sensors, static_argnums=(5, 6, 7)) # treat the arguments as a static used only for compilation, not as a dynamic array
+jit_get_all_agent_sensors = jax.jit(get_all_agent_sensors) # treat the arguments as a static used only for compilation, not as a dynamic array
 

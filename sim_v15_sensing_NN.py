@@ -1,5 +1,5 @@
 """
-9th version of AB predator-prey simulation
+15th version of AB predator-prey simulation
 
 Characteristics:
 - Two species (prey; sheep, predator; wolves)
@@ -18,6 +18,8 @@ Characteristics:
 - remove fitness (only use energy)
 - extract energy at each ts
 
+
+- CMAES
 """
 import os
 
@@ -45,7 +47,7 @@ NOISE_SCALE = 0.05
 DAMPING = 0.1
 
 # Sheep parameters
-NUM_SHEEP = 8
+NUM_SHEEP = 10
 SHEEP_RADIUS = 5.0
 SHEEP_ENERGY_BEGIN_MAX = 50.0
 SHEEP_MASS_BEGIN = 5.0 # initial sheep mass at birth
@@ -53,7 +55,7 @@ SHEEP_AGENT_TYPE = 1
 EAT_RATE_SHEEP = 0.2
 
 # Wolf parameters
-NUM_WOLF = 8
+NUM_WOLF = 10
 WOLF_RADIUS = 7.0
 WOLF_ENERGY_BEGIN_MAX = 50.0
 WOLF_MASS_BEGIN = 7.0
@@ -90,7 +92,6 @@ NUM_NEURONS = 100
 NUM_ACTIONS = 2
 ACTION_SCALE = 1.0
 LINEAR_ACTION_OFFSET = 0.0
-INIT_PARAM_SPAN = 5.0      # range for initializing weights (-5 to 5)
 TIME_CONSTANT_SCALE = 10.0 # speed of the neuron dynamics
 NUM_ES_PARAMS = NUM_NEURONS * (NUM_NEURONS + NUM_OBS + NUM_ACTIONS + 2) # total number of parameters the Evolutionary Strategy needs to optimize
 
@@ -99,14 +100,16 @@ NUM_ES_PARAMS = NUM_NEURONS * (NUM_NEURONS + NUM_OBS + NUM_ACTIONS + 2) # total 
 NUM_WORLDS = 1
 NUM_GENERATIONS = 1
 EP_LEN = 100
-ELITE_RATIO = 0.3
-SIGMA_INIT = 0.1
+#ELITE_RATIO = 0.3
+#SIGMA_INIT = 0.1
+ENERGY_THRESH_SAVE = 150.0
+ENERGY_THRESH_SAVE_STEP = 10.0
 
 #FITNESS_THRESH_SAVE = 150.0 # threshold for saving render data
 #FITNESS_THRESH_SAVE_STEP = 10.0 # the amount by which we increase the threshold for saving render data
 
 # save data
-DATA_PATH = "./data/sheep_wolf_data4/"
+DATA_PATH = "./data/sheep_wolf_data5/"
 
 
 # Predator-prey world parameters
@@ -129,13 +132,11 @@ PP_WORLD_PARAMS = Params(content= {"sheep_params": {"x_max": MAX_SPAWN_X,
                                                    },
                                    "policy_params_sheep": {"num_neurons": NUM_NEURONS,
                                                      "num_obs": NUM_OBS,
-                                                     "num_actions": NUM_ACTIONS,
-                                                     "init_param_span": INIT_PARAM_SPAN
+                                                     "num_actions": NUM_ACTIONS
                                                     },
                                    "policy_params_wolf": {"num_neurons": NUM_NEURONS,
                                                      "num_obs": NUM_OBS,
-                                                     "num_actions": NUM_ACTIONS,
-                                                     "init_param_span": INIT_PARAM_SPAN
+                                                     "num_actions": NUM_ACTIONS
                                                     }})
 
 
@@ -510,20 +511,16 @@ class CTRNN(Policy):
         num_neurons = params.content["num_neurons"]
         num_obs = params.content["num_obs"]
         num_actions = params.content["num_actions"]
-        init_param_span = params.content["init_param_span"]
 
         Z = jnp.zeros((num_neurons,), dtype=jnp.float32)
         action = jnp.zeros((num_actions,), dtype=jnp.float32)
         state = State(content={'Z': Z, 'action': action})
 
-        key, *init_keys = jax.random.split(key, 6)
-
-        J = jax.random.uniform(init_keys[0], (num_neurons, num_neurons), minval=-init_param_span, maxval=init_param_span, dtype=jnp.float32)
-        E = jax.random.uniform(init_keys[1], (num_neurons, num_obs), minval=-init_param_span, maxval=init_param_span, dtype=jnp.float32)
-        D = jax.random.uniform(init_keys[2], (num_actions, num_neurons), minval=-init_param_span, maxval=init_param_span, dtype=jnp.float32)
-
-        tau = jax.random.uniform(init_keys[3], (num_neurons, ), minval=-init_param_span, maxval=init_param_span, dtype=jnp.float32)
-        B = jax.random.uniform(init_keys[4], (num_neurons, ), minval=-init_param_span, maxval=init_param_span, dtype=jnp.float32)
+        J = jnp.zeros((num_neurons, num_neurons), dtype=jnp.float32)
+        E = jnp.zeros((num_neurons, num_obs), dtype=jnp.float32)
+        D = jnp.zeros((num_actions, num_neurons), dtype=jnp.float32)
+        tau = jnp.zeros((num_neurons,), dtype=jnp.float32)
+        B = jnp.zeros((num_neurons,), dtype=jnp.float32)
 
         params = Params(content={'J': J, 'E': E, 'D': D, 'tau': tau, 'B': B})
         return Policy(params=params, state=state, key=key)
@@ -569,7 +566,7 @@ class CTRNN(Policy):
         return policy.replace(params=new_policy_params)
 
 
-# potentially make this into two seperate functions:
+# potentially make this into two seperate functions (for sheep and wolves):
 def set_CMAES_params(CMAES_params, agents):
     """
     copy the CMAES_params to the agents while manipulating the shape of the parameters
@@ -622,16 +619,14 @@ class PredatorPreyWorld:
 
         policy_create_params_sheep = Params(content={'num_neurons': policy_params_sheep['num_neurons'],
                                                'num_obs': policy_params_sheep['num_obs'],
-                                               'num_actions': policy_params_sheep['num_actions'],
-                                               'init_param_span': policy_params_sheep['init_param_span']})
+                                               'num_actions': policy_params_sheep['num_actions']})
         policies_sheep = jax.vmap(CTRNN.create_policy, in_axes=(None, 0))(policy_create_params_sheep, policy_keys)
 
         key, *policy_keys = jax.random.split(key, num_wolf + 1)
         policy_keys = jnp.array(policy_keys)
         policy_create_params_wolf = Params(content={'num_neurons': policy_params_wolf['num_neurons'],
                                                'num_obs': policy_params_wolf['num_obs'],
-                                               'num_actions': policy_params_wolf['num_actions'],
-                                               'init_param_span': policy_params_wolf['init_param_span']})
+                                               'num_actions': policy_params_wolf['num_actions']})
 
         policies_wolf = jax.vmap(CTRNN.create_policy, in_axes=(None, 0))(policy_create_params_wolf, policy_keys)
 
@@ -826,10 +821,13 @@ def main():
 
     mean_sheep_energy_list = []
     mean_wolf_energy_list = []
+    sheep_param_list = []
+    wolf_param_list = []
 
     # for rendering/plotting:
     sheep_xs_list, sheep_ys_list, sheep_angles_list, sheep_energy_list = [], [], [], []
     wolf_xs_list, wolf_ys_list, wolf_angles_list, wolf_energy_list = [], [], [], []
+    energy_thresh_save = ENERGY_THRESH_SAVE
 
     print(f"Starting co-evolution with {NUM_WORLDS} worlds, {NUM_GENERATIONS} generations")
     print(f"Sheep population: {NUM_SHEEP}, Wolf population: {NUM_WOLF}")
@@ -844,7 +842,7 @@ def main():
         # run simulation once and get both energy and render data
         sheep_energy, wolf_energy, pred_prey_worlds = jit_get_energy(x_sheep, x_wolf, pred_prey_worlds)
 
-        state_sheep = strategy_sheep.tell(sheep_gen_key, x_sheep, -1*sheep_energy, state_sheep, es_params_sheep) # am i using the right keys?
+        state_sheep = strategy_sheep.tell(sheep_gen_key, x_sheep, -1*sheep_energy, state_sheep, es_params_sheep) # am I using the right keys?
         state_wolf = strategy_wolf.tell(wolf_gen_key, x_wolf, -1*wolf_energy, state_wolf, es_params_wolf)
 
         mean_sheep_energy = jnp.mean(sheep_energy)
@@ -857,6 +855,13 @@ def main():
 
         mean_sheep_energy_list.append(mean_sheep_energy)
         mean_wolf_energy_list.append(mean_wolf_energy)
+
+        # save parameters
+        if mean_sheep_energy > energy_thresh_save:
+            energy_thresh_save += ENERGY_THRESH_SAVE_STEP
+            sheep_param_list.append(state_sheep.mean)
+            wolf_param_list.append(state_wolf.mean)
+            print(f"  Saved parameters at fitness {mean_sheep_energy:.2f}")
 
         _, render_data_all = jax.vmap(jit_run_episode)(pred_prey_worlds)
 
@@ -876,37 +881,27 @@ def main():
               f'Wolf - Mean: {mean_wolf_energy:.2f}, Best: {best_wolf_energy:.2f}, Worst: {worst_wolf_energy:.2f}')
 
 
-    # convert to arrays
-    mean_sheep_energy_array = jnp.array(mean_sheep_energy_list)
-    mean_wolf_energy_array = jnp.array(mean_wolf_energy_list)
-
-    sheep_xs_array = jnp.array(sheep_xs_list)
-    sheep_ys_array = jnp.array(sheep_ys_list)
-    sheep_angles_array = jnp.array(sheep_angles_list)
-    sheep_energy_array = jnp.array(sheep_energy_list)
-
-    wolf_xs_array = jnp.array(wolf_xs_list)
-    wolf_ys_array = jnp.array(wolf_ys_list)
-    wolf_angles_array = jnp.array(wolf_angles_list)
-    wolf_energy_array = jnp.array(wolf_energy_list)
-
+    # convert to arrays and save
     os.makedirs(DATA_PATH, exist_ok=True)
 
-    jnp.save(DATA_PATH + 'mean_sheep_energy_list.npy', mean_sheep_energy_array)
-    jnp.save(DATA_PATH + 'mean_wolf_energy_list.npy', mean_wolf_energy_array)
+    jnp.save(DATA_PATH + 'mean_sheep_energy_list.npy',jnp.array(mean_sheep_energy_list))
+    jnp.save(DATA_PATH + 'mean_wolf_energy_list.npy', jnp.array(mean_wolf_energy_list))
     jnp.save(DATA_PATH + 'final_key.npy', jnp.array(key))
 
     # save sheep rendering-plotting data
-    jnp.save(DATA_PATH + 'rendering_sheep_xs.npy', sheep_xs_array)
-    jnp.save(DATA_PATH + 'rendering_sheep_ys.npy', sheep_ys_array)
-    jnp.save(DATA_PATH + 'rendering_sheep_angs.npy', sheep_angles_array)
-    jnp.save(DATA_PATH + 'rendering_sheep_energy.npy', sheep_energy_array) # plot energy against ts
+    jnp.save(DATA_PATH + 'rendering_sheep_xs.npy', jnp.array(sheep_xs_list))
+    jnp.save(DATA_PATH + 'rendering_sheep_ys.npy', jnp.array(sheep_ys_list))
+    jnp.save(DATA_PATH + 'rendering_sheep_angs.npy', jnp.array(sheep_angles_list))
+    jnp.save(DATA_PATH + 'rendering_sheep_energy.npy',  jnp.array(sheep_energy_list)) # plot energy against ts
 
     # save wolf rendering-plotting data
-    jnp.save(DATA_PATH + 'rendering_wolf_xs.npy', wolf_xs_array)
-    jnp.save(DATA_PATH + 'rendering_wolf_ys.npy', wolf_ys_array)
-    jnp.save(DATA_PATH + 'rendering_wolf_angs.npy', wolf_angles_array)
-    jnp.save(DATA_PATH + 'rendering_wolf_energy.npy', wolf_energy_array) # plot energy against ts
+    jnp.save(DATA_PATH + 'rendering_wolf_xs.npy', jnp.array(wolf_xs_list))
+    jnp.save(DATA_PATH + 'rendering_wolf_ys.npy', jnp.array(wolf_ys_list))
+    jnp.save(DATA_PATH + 'rendering_wolf_angs.npy', jnp.array(wolf_angles_list))
+    jnp.save(DATA_PATH + 'rendering_wolf_energy.npy', jnp.array(wolf_energy_list)) # plot energy against ts
+
+    jnp.save(DATA_PATH + 'sheep_param_list.npy', jnp.array(sheep_param_list))
+    jnp.save(DATA_PATH + 'wolf_param_list.npy', jnp.array(wolf_param_list))
 
     print(f"Simulation completed. Data saved to {DATA_PATH}")
 
